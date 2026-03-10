@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -374,6 +375,7 @@ class Tracer:
             self.vulnerability_found_callback(report)
 
         self.save_run_data()
+        self._write_scan_progress()
         return report_id
 
     def get_existing_vulnerabilities(self) -> list[dict[str, Any]]:
@@ -451,6 +453,7 @@ class Tracer:
             status="running",
             source="strix.agents",
         )
+        self._write_scan_progress()
 
     def log_chat_message(
         self,
@@ -564,6 +567,13 @@ class Tracer:
                 source="strix.findings",
             )
 
+        self._append_tool_log(agent_id, tool_data)
+        if tool_name in (
+            "create_vulnerability_report", "finish_scan", "agent_finish",
+            "create_agent",
+        ):
+            self._write_scan_progress()
+
     def update_agent_status(
         self,
         agent_id: str,
@@ -584,6 +594,9 @@ class Tracer:
             error=error_message,
             source="strix.agents",
         )
+
+        if status in ("completed", "failed", "error", "stopped", "stopping", "finished"):
+            self._write_scan_progress()
 
     def set_scan_config(self, config: dict[str, Any]) -> None:
         self.scan_config = config
@@ -782,6 +795,278 @@ class Tracer:
             pass
         return 0.0
 
+    # ------------------------------------------------------------------
+    # Interim disk logging
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_dir_name(name: str) -> str:
+        sanitized = re.sub(r"[^\w\s-]", "", name).strip()
+        sanitized = re.sub(r"[\s]+", "_", sanitized)
+        return sanitized[:60] or "agent"
+
+    def _agent_log_dir(self, agent_id: str) -> Path:
+        agent_data = self.agents.get(agent_id, {})
+        name = agent_data.get("name", "unknown")
+        dir_name = f"{agent_id}_{self._safe_dir_name(name)}"
+        log_dir = self.get_run_dir() / "agents" / dir_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir
+
+    @staticmethod
+    def _truncate_value(value: Any, max_len: int = 2000) -> Any:
+        if isinstance(value, str) and len(value) > max_len:
+            return value[: max_len] + f"... [truncated, {len(value)} chars total]"
+        if isinstance(value, dict):
+            return {
+                k: Tracer._truncate_value(v, max_len) for k, v in value.items()
+            }
+        if isinstance(value, list) and len(value) > 20:
+            return value[:20] + [f"... [{len(value)} items total]"]
+        return value
+
+    def _append_tool_log(self, agent_id: str, tool_data: dict[str, Any]) -> None:
+        try:
+            log_dir = self._agent_log_dir(agent_id)
+            log_file = log_dir / "tool_log.jsonl"
+            record = {
+                "timestamp": tool_data.get("completed_at") or datetime.now(UTC).isoformat(),
+                "tool_name": tool_data.get("tool_name", "unknown"),
+                "args": self._truncate_value(tool_data.get("args", {})),
+                "status": tool_data.get("status", "unknown"),
+                "result": self._truncate_value(tool_data.get("result")),
+                "started_at": tool_data.get("started_at"),
+                "completed_at": tool_data.get("completed_at"),
+            }
+            append_jsonl_record(log_file, record)
+        except OSError:
+            logger.debug("Failed to append tool log for agent %s", agent_id)
+
+    def _write_scan_progress(self) -> None:
+        try:
+            run_dir = self.get_run_dir()
+            progress_path = run_dir / "scan_progress.md"
+            status_path = run_dir / "scan_status.json"
+
+            now = datetime.now(UTC)
+            start_dt = datetime.fromisoformat(self.start_time.replace("Z", "+00:00"))
+            elapsed = (now - start_dt).total_seconds()
+            elapsed_str = self._format_elapsed(elapsed)
+
+            agents_list = list(self.agents.values())
+            vuln_reports = list(self.vulnerability_reports)
+
+            agent_vulns: dict[str, list[dict[str, Any]]] = {}
+            for _exec_id, td in list(self.tool_executions.items()):
+                if (
+                    td.get("tool_name") == "create_vulnerability_report"
+                    and td.get("status") == "completed"
+                ):
+                    result = td.get("result")
+                    if isinstance(result, dict) and result.get("success"):
+                        aid = td.get("agent_id", "unknown")
+                        report_id = result.get("report_id", "")
+                        for vr in vuln_reports:
+                            if vr.get("id") == report_id:
+                                agent_vulns.setdefault(aid, []).append(vr)
+                                break
+
+            agent_tool_counts: dict[str, int] = {}
+            skip_tools = {"scan_start_info", "subagent_start_info"}
+            for td in list(self.tool_executions.values()):
+                if td.get("tool_name") not in skip_tools:
+                    aid = td.get("agent_id", "unknown")
+                    agent_tool_counts[aid] = agent_tool_counts.get(aid, 0) + 1
+
+            md_lines = self._build_progress_markdown(
+                agents_list, vuln_reports, agent_vulns,
+                agent_tool_counts, elapsed_str, now,
+            )
+            status_obj = self._build_status_json(
+                agents_list, vuln_reports, agent_vulns,
+                agent_tool_counts, elapsed, now,
+            )
+
+            lock = get_events_write_lock(progress_path)
+            with lock:
+                progress_path.write_text("\n".join(md_lines), encoding="utf-8")
+                status_path.write_text(
+                    json.dumps(status_obj, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+        except OSError:
+            logger.debug("Failed to write scan progress files")
+
+    def _build_progress_markdown(
+        self,
+        agents_list: list[dict[str, Any]],
+        vuln_reports: list[dict[str, Any]],
+        agent_vulns: dict[str, list[dict[str, Any]]],
+        agent_tool_counts: dict[str, int],
+        elapsed_str: str,
+        now: datetime,
+    ) -> list[str]:
+        lines: list[str] = []
+        lines.append("# Scan Progress")
+        lines.append("")
+        lines.append(
+            f"**Updated:** {now.strftime('%Y-%m-%d %H:%M:%S UTC')}  "
+        )
+        lines.append(f"**Elapsed:** {elapsed_str}  ")
+        lines.append(
+            f"**Agents:** {len(agents_list)}  "
+            f"**Findings:** {len(vuln_reports)}"
+        )
+        lines.append("")
+
+        if vuln_reports:
+            lines.append("## Findings Summary")
+            lines.append("")
+            severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+            sorted_vulns = sorted(
+                vuln_reports,
+                key=lambda v: (severity_order.get(v.get("severity", "info"), 5), v.get("id", "")),
+            )
+            for vr in sorted_vulns:
+                sev = vr.get("severity", "info").upper()
+                title = vr.get("title", "Untitled")
+                vid = vr.get("id", "")
+                lines.append(f"- **[{sev}]** {title} (`{vid}`)")
+            lines.append("")
+
+        lines.append("## Agents")
+        lines.append("")
+
+        root_agents = [a for a in agents_list if a.get("parent_id") is None]
+        child_map: dict[str, list[dict[str, Any]]] = {}
+        for a in agents_list:
+            pid = a.get("parent_id")
+            if pid:
+                child_map.setdefault(pid, []).append(a)
+
+        for root in root_agents:
+            self._write_agent_tree_md(
+                lines, root, child_map, agent_vulns, agent_tool_counts, depth=0
+            )
+
+        return lines
+
+    def _write_agent_tree_md(
+        self,
+        lines: list[str],
+        agent: dict[str, Any],
+        child_map: dict[str, list[dict[str, Any]]],
+        agent_vulns: dict[str, list[dict[str, Any]]],
+        agent_tool_counts: dict[str, int],
+        depth: int,
+    ) -> None:
+        aid = agent["id"]
+        name = agent.get("name", "Agent")
+        status = agent.get("status", "unknown")
+        task = agent.get("task", "")
+        tool_count = agent_tool_counts.get(aid, 0)
+        vulns = agent_vulns.get(aid, [])
+
+        indent = "  " * depth
+        status_icon = {
+            "running": "🔄", "waiting": "⏸️", "completed": "✅",
+            "failed": "❌", "error": "❌", "stopped": "⏹️",
+            "stopping": "⏹️", "finished": "✅",
+        }.get(status, "❓")
+
+        lines.append(f"{indent}### {status_icon} {name}")
+        lines.append(f"{indent}- **Status:** {status}")
+        if task:
+            task_short = task[:200] + ("..." if len(task) > 200 else "")
+            lines.append(f"{indent}- **Task:** {task_short}")
+        lines.append(f"{indent}- **Tools invoked:** {tool_count}")
+        if vulns:
+            lines.append(f"{indent}- **Findings:** {len(vulns)}")
+            for vr in vulns:
+                sev = vr.get("severity", "info").upper()
+                title = vr.get("title", "Untitled")
+                lines.append(f"{indent}  - [{sev}] {title}")
+        lines.append("")
+
+        for child in child_map.get(aid, []):
+            self._write_agent_tree_md(
+                lines, child, child_map, agent_vulns, agent_tool_counts, depth + 1
+            )
+
+    def _build_status_json(
+        self,
+        agents_list: list[dict[str, Any]],
+        vuln_reports: list[dict[str, Any]],
+        agent_vulns: dict[str, list[dict[str, Any]]],
+        agent_tool_counts: dict[str, int],
+        elapsed_seconds: float,
+        now: datetime,
+    ) -> dict[str, Any]:
+        agents_out = []
+        for a in agents_list:
+            aid = a["id"]
+            vulns = agent_vulns.get(aid, [])
+            agents_out.append({
+                "id": aid,
+                "name": a.get("name", "Agent"),
+                "status": a.get("status", "unknown"),
+                "task": (a.get("task") or "")[:300],
+                "parent_id": a.get("parent_id"),
+                "tool_count": agent_tool_counts.get(aid, 0),
+                "finding_count": len(vulns),
+                "findings": [
+                    {"id": v.get("id"), "title": v.get("title"), "severity": v.get("severity")}
+                    for v in vulns
+                ],
+                "created_at": a.get("created_at"),
+                "updated_at": a.get("updated_at"),
+            })
+
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        findings_out = sorted(
+            [
+                {
+                    "id": v.get("id"),
+                    "title": v.get("title"),
+                    "severity": v.get("severity"),
+                    "target": v.get("target"),
+                    "endpoint": v.get("endpoint"),
+                    "cvss": v.get("cvss"),
+                    "timestamp": v.get("timestamp"),
+                }
+                for v in vuln_reports
+            ],
+            key=lambda v: (severity_order.get(v.get("severity", "info"), 5), v.get("id", "")),
+        )
+
+        running = sum(1 for a in agents_list if a.get("status") == "running")
+        completed = sum(1 for a in agents_list if a.get("status") in ("completed", "finished"))
+        failed = sum(1 for a in agents_list if a.get("status") in ("failed", "error"))
+
+        return {
+            "updated_at": now.isoformat(),
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "scan_completed": bool(self.scan_results and self.scan_results.get("scan_completed")),
+            "summary": {
+                "total_agents": len(agents_list),
+                "running": running,
+                "completed": completed,
+                "failed": failed,
+                "total_findings": len(vuln_reports),
+            },
+            "agents": agents_out,
+            "findings": findings_out,
+        }
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        if h:
+            return f"{h}h {m}m {s}s"
+        if m:
+            return f"{m}m {s}s"
+        return f"{s}s"
+
     def get_agent_tools(self, agent_id: str) -> list[dict[str, Any]]:
         return [
             exec_data
@@ -848,3 +1133,4 @@ class Tracer:
 
     def cleanup(self) -> None:
         self.save_run_data(mark_complete=True)
+        self._write_scan_progress()
