@@ -22,7 +22,10 @@ _agent_states: dict[str, Any] = {}
 
 
 def _run_agent_in_thread(
-    agent: Any, state: Any, inherited_messages: list[dict[str, Any]]
+    agent: Any,
+    state: Any,
+    inherited_messages: list[dict[str, Any]],
+    briefing: str | None = None,
 ) -> dict[str, Any]:
     try:
         if inherited_messages:
@@ -31,14 +34,22 @@ def _run_agent_in_thread(
                 state.add_message(msg["role"], msg["content"])
             state.add_message("user", "</inherited_context_from_parent>")
 
+        if briefing:
+            state.add_message("user", f"<parent_briefing>\n{briefing}\n</parent_briefing>")
+
         parent_info = _agent_graph["nodes"].get(state.parent_id, {})
         parent_name = parent_info.get("name", "Unknown Parent")
 
-        context_status = (
-            "inherited conversation context from your parent for background understanding"
-            if inherited_messages
-            else "started with a fresh context"
-        )
+        if inherited_messages:
+            context_status = (
+                "inherited conversation context from your parent for background understanding"
+            )
+        elif briefing:
+            context_status = (
+                "received a structured briefing from your parent (see <parent_briefing>)"
+            )
+        else:
+            context_status = "started with a fresh context"
 
         task_xml = f"""<agent_delegation>
     <identity>
@@ -184,44 +195,99 @@ def view_agent_graph(agent_state: Any) -> dict[str, Any]:
         }
 
 
+_ROLE_SKILL_MAP: dict[str, str] = {
+    "vuln-injection": "sql_injection",
+    "vuln-xss": "xss",
+    "vuln-auth": "authentication_jwt",
+    "vuln-authz": "broken_function_level_authorization",
+    "vuln-ssrf": "ssrf",
+    "exploit-injection": "sql_injection",
+    "exploit-xss": "xss",
+    "exploit-auth": "authentication_jwt",
+    "exploit-authz": "broken_function_level_authorization",
+    "exploit-ssrf": "ssrf",
+}
+
+_VALID_ROLES: set[str] = {
+    "pre-recon",
+    "recon",
+    "vuln-injection",
+    "vuln-xss",
+    "vuln-auth",
+    "vuln-authz",
+    "vuln-ssrf",
+    "exploit-injection",
+    "exploit-xss",
+    "exploit-auth",
+    "exploit-authz",
+    "exploit-ssrf",
+    "report",
+}
+
+
+def _prepare_skill_list(
+    skills: str | None, role: str | None
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Validate role, build effective skill list. Returns (skills, error_response_or_None)."""
+    skill_list: list[str] = []
+    if skills:
+        skill_list = [s.strip() for s in skills.split(",") if s.strip()]
+
+    if role and role not in _VALID_ROLES:
+        return skill_list, {
+            "success": False,
+            "error": f"Invalid role: {role!r}. Valid roles: {', '.join(sorted(_VALID_ROLES))}.",
+            "agent_id": None,
+        }
+
+    if role and role in _ROLE_SKILL_MAP:
+        from strix.skills import get_all_skill_names
+
+        auto_skill = _ROLE_SKILL_MAP[role]
+        if auto_skill in get_all_skill_names() and auto_skill not in skill_list:
+            skill_list.insert(0, auto_skill)
+
+    if len(skill_list) > 5:
+        return skill_list, {
+            "success": False,
+            "error": "Cannot specify more than 5 skills for an agent (use comma-separated format)",
+            "agent_id": None,
+        }
+
+    if skill_list:
+        from strix.skills import get_all_skill_names, validate_skill_names
+
+        validation = validate_skill_names(skill_list)
+        if validation["invalid"]:
+            available_skills = list(get_all_skill_names())
+            return skill_list, {
+                "success": False,
+                "error": (
+                    f"Invalid skills: {validation['invalid']}. "
+                    f"Available skills: {', '.join(available_skills)}"
+                ),
+                "agent_id": None,
+            }
+
+    return skill_list, None
+
+
 @register_tool(sandbox_execution=False)
 def create_agent(
     agent_state: Any,
     task: str,
     name: str,
-    inherit_context: bool = True,
+    inherit_context: bool = False,
     skills: str | None = None,
+    briefing: str | None = None,
+    role: str | None = None,
 ) -> dict[str, Any]:
     try:
         parent_id = agent_state.agent_id
 
-        skill_list = []
-        if skills:
-            skill_list = [s.strip() for s in skills.split(",") if s.strip()]
-
-        if len(skill_list) > 5:
-            return {
-                "success": False,
-                "error": (
-                    "Cannot specify more than 5 skills for an agent (use comma-separated format)"
-                ),
-                "agent_id": None,
-            }
-
-        if skill_list:
-            from strix.skills import get_all_skill_names, validate_skill_names
-
-            validation = validate_skill_names(skill_list)
-            if validation["invalid"]:
-                available_skills = list(get_all_skill_names())
-                return {
-                    "success": False,
-                    "error": (
-                        f"Invalid skills: {validation['invalid']}. "
-                        f"Available skills: {', '.join(available_skills)}"
-                    ),
-                    "agent_id": None,
-                }
+        skill_list, error = _prepare_skill_list(skills, role)
+        if error is not None:
+            return error
 
         from strix.agents import StrixAgent
         from strix.agents.state import AgentState
@@ -239,7 +305,7 @@ def create_agent(
             if hasattr(parent_agent.llm_config, "scan_mode"):
                 scan_mode = parent_agent.llm_config.scan_mode
 
-        llm_config = LLMConfig(skills=skill_list, timeout=timeout, scan_mode=scan_mode)
+        llm_config = LLMConfig(skills=skill_list, timeout=timeout, scan_mode=scan_mode, role=role)
 
         agent_config = {
             "llm_config": llm_config,
@@ -250,7 +316,7 @@ def create_agent(
 
         agent = StrixAgent(agent_config)
 
-        inherited_messages = []
+        inherited_messages: list[dict[str, Any]] = []
         if inherit_context:
             inherited_messages = agent_state.get_conversation_history()
 
@@ -258,7 +324,7 @@ def create_agent(
 
         thread = threading.Thread(
             target=_run_agent_in_thread,
-            args=(agent, state, inherited_messages),
+            args=(agent, state, inherited_messages, briefing),
             daemon=True,
             name=f"Agent-{name}-{state.agent_id}",
         )
@@ -277,6 +343,7 @@ def create_agent(
                 "name": name,
                 "status": "running",
                 "parent_id": parent_id,
+                "role": role,
             },
         }
 

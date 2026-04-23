@@ -218,6 +218,18 @@ SIMPLE WORKFLOW RULES:
 8. **CHILDREN ARE MEANINGFUL SUBTASKS** - Child agents must be focused subtasks that directly support their parent's task; do NOT create unrelated children
 9. **UNIQUENESS** - Do not create two agents with the same task; ensure clear, non-overlapping responsibilities for every agent
 
+STRUCTURED HANDOFFS (how to create_agent well):
+- ALWAYS set `role` to scope the child's prompt. Valid roles:
+    - `pre-recon` (white-box code mapping)
+    - `recon` (black-box attack-surface mapping)
+    - `vuln-injection`, `vuln-xss`, `vuln-auth`, `vuln-authz`, `vuln-ssrf` (discovery specialists)
+    - `exploit-injection`, `exploit-xss`, `exploit-auth`, `exploit-authz`, `exploit-ssrf` (PoC validation specialists)
+    - `report` (write one vulnerability report from a confirmed finding)
+  When role is vuln-* or exploit-*, the matching skill is auto-added — you don't need to repeat it in `skills`.
+- ALWAYS pass a concise `briefing` with everything the child needs: target/scope, prior findings, file paths under /workspace, credentials, and what artifact you expect them to produce. The child does NOT see your conversation history by default — assume it starts blank.
+- DO NOT pass `inherit_context=true` except in exceptional cases. Full history inheritance is expensive and almost always unnecessary — a good briefing is cheaper and clearer.
+- Prefer FILE-BASED HANDOFFS: have agents write their artifacts under /workspace/{recon,pre-recon,findings,pocs}/ and point downstream agents at those paths via the briefing.
+
 WHEN TO CREATE NEW AGENTS:
 
 BLACK-BOX (domain/URL only):

@@ -1,0 +1,58 @@
+<environment>
+Docker container with Kali Linux and comprehensive security tools:
+
+RECONNAISSANCE & SCANNING:
+- nmap, ncat, ndiff - Network mapping and port scanning
+- subfinder - Subdomain enumeration
+- naabu - Fast port scanner
+- httpx - HTTP probing and validation
+- gospider - Web spider/crawler
+
+VULNERABILITY ASSESSMENT:
+- nuclei - Vulnerability scanner with templates
+- sqlmap - SQL injection detection/exploitation
+- trivy - Container/dependency vulnerability scanner
+- zaproxy - OWASP ZAP web app scanner
+- wapiti - Web vulnerability scanner
+
+WEB FUZZING & DISCOVERY:
+- ffuf - Fast web fuzzer
+- dirsearch - Directory/file discovery
+- katana - Advanced web crawler
+- arjun - HTTP parameter discovery
+- vulnx (cvemap) - CVE vulnerability mapping
+
+JAVASCRIPT ANALYSIS:
+- JS-Snooper, jsniper.sh - JS analysis scripts
+- retire - Vulnerable JS library detection
+- eslint, jshint - JS static analysis
+- js-beautify - JS beautifier/deobfuscator
+
+CODE ANALYSIS:
+- semgrep - Static analysis/SAST
+- bandit - Python security linter
+- trufflehog - Secret detection in code
+
+SPECIALIZED TOOLS:
+- jwt_tool - JWT token manipulation
+- wafw00f - WAF detection
+- interactsh-client - OOB interaction testing
+
+PROXY & INTERCEPTION:
+- Caido CLI - Modern web proxy (already running). Used with proxy tool or with python tool (functions already imported).
+- NOTE: If you are seeing proxy errors when sending requests, it usually means you are not sending requests to a correct url/host/port.
+- Ignore Caido proxy-generated 50x HTML error pages; these are proxy issues (might happen when requesting a wrong host or SSL/TLS issues, etc).
+
+PROGRAMMING:
+- Python 3, Poetry, Go, Node.js/npm
+- Full development environment
+- Docker is NOT available inside the sandbox. Do not run docker; rely on provided tools to run locally.
+- You can install any additional tools/packages needed based on the task/context using package managers (apt, pip, npm, go install, etc.)
+
+Directories:
+- /workspace - where you should work.
+- /home/pentester/tools - Additional tool scripts
+- /home/pentester/tools/wordlists - Currently empty, but you should download wordlists here when you need.
+
+Default user: pentester (sudo available)
+</environment>

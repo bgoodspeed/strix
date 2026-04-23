@@ -60,24 +60,40 @@ Use this tool when:
     <description>Create and spawn a new agent to handle a specific subtask.
 
 Only create a new agent if no existing agent is handling the specific task.</description>
-    <details>The new agent inherits the parent's conversation history and context up to the point
-  of creation, then continues with its assigned subtask. This enables decomposition
-  of complex penetration testing tasks into specialized sub-agents.
+    <details>The new agent starts with a FRESH context by default. You (the parent) are responsible for
+  packing everything the child needs into the `task` and an optional structured `briefing` —
+  prior findings, target scope, file paths to read, etc. The child can also read files from the
+  shared /workspace directory and see proxy traffic from previous work.
+
+  Select a `role` to scope the child's system prompt to its phase (e.g. recon vs exploit vs report).
+  A focused role means a shorter, more relevant system prompt and better specialization.
+
+  Valid roles: pre-recon, recon, vuln-injection, vuln-xss, vuln-auth, vuln-authz, vuln-ssrf,
+  exploit-injection, exploit-xss, exploit-auth, exploit-authz, exploit-ssrf, report.
+  Omit `role` for a generalist child that inherits the full orchestrator prompt.
 
   The agent runs asynchronously and independently, allowing the parent to continue
   immediately while the new agent executes its task in the background.
 
-  If you as a parent agent don't absolutely have anything to do while your subagents are running, you can use wait_for_message tool. The subagent will continue to run in the background, and update you when it's done.
+  If you as a parent agent don't absolutely have anything to do while your subagents are running,
+  you can use wait_for_message tool. The subagent will continue to run in the background, and
+  update you when it's done.
   </details>
     <parameters>
       <parameter name="task" type="string" required="true">
-        <description>The specific task/objective for the new agent to accomplish</description>
+        <description>The specific task/objective for the new agent to accomplish. Must be self-contained — the child does NOT see your conversation history by default.</description>
       </parameter>
       <parameter name="name" type="string" required="true">
         <description>Human-readable name for the agent (for tracking purposes)</description>
       </parameter>
+      <parameter name="role" type="string" required="false">
+        <description>Phase-scoped role for the child. Selects a focused system prompt. Valid values: pre-recon, recon, vuln-injection, vuln-xss, vuln-auth, vuln-authz, vuln-ssrf, exploit-injection, exploit-xss, exploit-auth, exploit-authz, exploit-ssrf, report. When role is vuln-* or exploit-*, the matching skill is auto-added to `skills`. Omit for a generalist agent.</description>
+      </parameter>
+      <parameter name="briefing" type="string" required="false">
+        <description>Structured briefing of what the child needs to know — prior findings, target scope, file paths to read, confirmed inputs/outputs. Prefer this over inherit_context; it's cheaper and clearer. Markdown or JSON both fine.</description>
+      </parameter>
       <parameter name="inherit_context" type="boolean" required="false">
-        <description>Whether the new agent should inherit parent's conversation history and context</description>
+        <description>Escape hatch: if true, injects the parent's full conversation history into the child. Default is FALSE. Almost always leave this unset and pass a concise `briefing` instead — full history inheritance is expensive and usually unnecessary.</description>
       </parameter>
       <parameter name="skills" type="string" required="false">
         <description>Comma-separated list of skills to use for the agent (MAXIMUM 5 skills allowed). Most agents should have at least one skill in order to be useful. Agents should be highly specialized - use 1-3 related skills; up to 5 for complex contexts. {{DYNAMIC_SKILLS_DESCRIPTION}}</description>
@@ -87,35 +103,50 @@ Only create a new agent if no existing agent is handling the specific task.</des
       <description>Response containing: - agent_id: Unique identifier for the created agent - success: Whether the agent was created successfully - message: Status message - agent_info: Details about the created agent</description>
     </returns>
     <examples>
-  # After confirming no SQL testing agent exists, create agent for vulnerability validation
+  # Spawn a recon agent with a concise briefing (no full-history inheritance)
   <function=create_agent>
-  <parameter=task>Validate and exploit the suspected SQL injection vulnerability found in
-              the login form. Confirm exploitability and document proof of concept.</parameter>
-  <parameter=name>SQLi Validator</parameter>
-  <parameter=skills>sql_injection</parameter>
+  <parameter=task>Map the attack surface for the deployed web app: enumerate subdomains, open ports,
+              tech stack, all reachable endpoints and their parameters. Produce a written map in
+              /workspace/recon/attack_surface.md.</parameter>
+  <parameter=name>Recon Agent</parameter>
+  <parameter=role>recon</parameter>
+  <parameter=briefing>Target: https://example.com (authorized for full pentest).
+              Scope: *.example.com subdomains + main app only; no third-party SaaS.
+              Prior work: none yet — you are the first agent in the pipeline.</parameter>
   </function>
 
+  # Spawn a vuln-discovery specialist with a type-scoped role
   <function=create_agent>
-  <parameter=task>Test authentication mechanisms, JWT implementation, and session management
-              for security vulnerabilities and bypass techniques.</parameter>
-  <parameter=name>Auth Specialist</parameter>
-  <parameter=skills>authentication_jwt, business_logic</parameter>
+  <parameter=task>Identify XSS sinks in the /search and /comments endpoints. For each suspected sink,
+              trace source → sink and write a finding to /workspace/findings/xss/&lt;id&gt;.md.</parameter>
+  <parameter=name>XSS Discovery Agent</parameter>
+  <parameter=role>vuln-xss</parameter>
+  <parameter=briefing>Target map: /workspace/recon/attack_surface.md.
+              Focus endpoints: GET /search?q=, POST /comments. Both echo user input in HTML body.
+              Auth required for /comments — test credentials stored in /workspace/creds.env.</parameter>
   </function>
 
-  # Example of single-skill specialization (most focused)
+  # Spawn an exploit-phase validator for a specific finding
   <function=create_agent>
-  <parameter=task>Perform comprehensive XSS testing including reflected, stored, and DOM-based
-              variants across all identified input points.</parameter>
-  <parameter=name>XSS Specialist</parameter>
-  <parameter=skills>xss</parameter>
+  <parameter=task>Build a working PoC for the reflected XSS in /search?q=. Capture the payload,
+              the HTTP request, and evidence of execution (cookie exfil or JS alert). Save to
+              /workspace/pocs/xss-search.md.</parameter>
+  <parameter=name>XSS Exploit Validator</parameter>
+  <parameter=role>exploit-xss</parameter>
+  <parameter=briefing>Finding: /workspace/findings/xss/001.md.
+              Summary: &lt;script&gt; reflected unsanitized in search result page, context = HTML body,
+              no CSP. Try basic alert() payload first, then cookie exfil variant.</parameter>
   </function>
 
-  # Example of up to 5 related skills (borderline acceptable)
+  # Spawn a reporting agent — needs only the confirmed finding + PoC
   <function=create_agent>
-  <parameter=task>Test for server-side vulnerabilities including SSRF, XXE, and potential
-              RCE vectors in file upload and XML processing endpoints.</parameter>
-  <parameter=name>Server-Side Attack Specialist</parameter>
-  <parameter=skills>ssrf, xxe, rce</parameter>
+  <parameter=task>Write a formal vulnerability report for the confirmed reflected XSS using
+              create_vulnerability_report. Include severity, CWE, reproduction steps, impact.</parameter>
+  <parameter=name>XSS Reporter</parameter>
+  <parameter=role>report</parameter>
+  <parameter=briefing>Confirmed finding: /workspace/findings/xss/001.md.
+              PoC: /workspace/pocs/xss-search.md.
+              Severity rationale: session cookie not HttpOnly; cookie exfil PoC succeeded.</parameter>
   </function>
     </examples>
   </tool>

@@ -1,0 +1,37 @@
+<environment>
+Docker container with Kali Linux. Tools relevant to reconnaissance & mapping:
+
+RECONNAISSANCE & SCANNING:
+- nmap, ncat, ndiff - Network mapping and port scanning
+- subfinder - Subdomain enumeration
+- naabu - Fast port scanner
+- httpx - HTTP probing and validation
+- gospider - Web spider/crawler
+
+WEB FUZZING & DISCOVERY:
+- ffuf - Fast web fuzzer
+- dirsearch - Directory/file discovery
+- katana - Advanced web crawler
+- arjun - HTTP parameter discovery
+
+JAVASCRIPT ANALYSIS (for deployed JS):
+- JS-Snooper, jsniper.sh - JS analysis scripts
+- retire - Vulnerable JS library detection
+- js-beautify - JS beautifier/deobfuscator
+
+CODE ANALYSIS (for white-box pre-recon):
+- semgrep - Static analysis/SAST
+- trufflehog - Secret detection in code
+
+PROXY & INTERCEPTION:
+- Caido CLI - Modern web proxy (already running). Use the proxy tool or python tool to inspect traffic while crawling.
+
+PROGRAMMING:
+- Python 3, Go, Node.js/npm available. Write scripts for concurrent probing/crawling when helpful.
+
+Directories:
+- /workspace - where you should work. Write your attack-surface map here for downstream agents.
+- /home/pentester/tools/wordlists - Download wordlists here when needed.
+
+Default user: pentester (sudo available)
+</environment>

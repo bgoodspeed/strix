@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import litellm
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound, select_autoescape
 from litellm import acompletion, completion_cost, stream_chunk_builder, supports_reasoning
 from litellm.utils import supports_prompt_caching, supports_vision
 
@@ -94,7 +94,9 @@ class LLM:
             skill_content = load_skills(skills_to_load)
             env.globals["get_skill"] = lambda name: skill_content.get(name, "")
 
-            result = env.get_template("system_prompt.jinja").render(
+            template = self._select_prompt_template(env)
+
+            result = template.render(
                 get_tools_prompt=get_tools_prompt,
                 loaded_skill_names=list(skill_content.keys()),
                 **skill_content,
@@ -102,6 +104,22 @@ class LLM:
             return str(result)
         except Exception:  # noqa: BLE001
             return ""
+
+    def _select_prompt_template(self, env: Environment) -> Any:
+        candidates = []
+        role = getattr(self.config, "role", None)
+        if role:
+            candidates.append(f"system_prompt_{role}.jinja")
+            if "-" in role:
+                candidates.append(f"system_prompt_{role.split('-', 1)[0]}.jinja")
+        candidates.append("system_prompt.jinja")
+
+        for candidate in candidates:
+            try:
+                return env.get_template(candidate)
+            except TemplateNotFound:
+                continue
+        return env.get_template("system_prompt.jinja")
 
     def set_agent_identity(self, agent_name: str | None, agent_id: str | None) -> None:
         if agent_name:
@@ -325,10 +343,10 @@ class LLM:
             content = result[0]["content"]
             result[0] = {
                 **result[0],
-                "content": [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                ]
-                if isinstance(content, str)
-                else content,
+                "content": (
+                    [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                    if isinstance(content, str)
+                    else content
+                ),
             }
         return result
