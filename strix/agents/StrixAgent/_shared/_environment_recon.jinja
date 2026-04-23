@@ -30,7 +30,8 @@ PROGRAMMING:
 - Python 3, Go, Node.js/npm available. Write scripts for concurrent probing/crawling when helpful.
 
 Directories:
-- /workspace - where you should work. Write your attack-surface map here for downstream agents.
+- /workspace - where you should work.
+- /workspace/.strix/deliverables - shared cross-agent handoff artifacts. Use write_deliverable (path="recon/…") to publish your attack-surface map so downstream agents can read it via list_deliverables / read_deliverable.
 - /home/pentester/tools/wordlists - Download wordlists here when needed.
 
 Default user: pentester (sudo available)

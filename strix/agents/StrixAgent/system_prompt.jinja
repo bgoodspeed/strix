@@ -226,9 +226,15 @@ STRUCTURED HANDOFFS (how to create_agent well):
     - `exploit-injection`, `exploit-xss`, `exploit-auth`, `exploit-authz`, `exploit-ssrf` (PoC validation specialists)
     - `report` (write one vulnerability report from a confirmed finding)
   When role is vuln-* or exploit-*, the matching skill is auto-added — you don't need to repeat it in `skills`.
-- ALWAYS pass a concise `briefing` with everything the child needs: target/scope, prior findings, file paths under /workspace, credentials, and what artifact you expect them to produce. The child does NOT see your conversation history by default — assume it starts blank.
+- ALWAYS pass a concise `briefing` with everything the child needs: target/scope, prior findings, deliverable paths to read, credentials, and what artifact you expect them to produce. The child does NOT see your conversation history by default — assume it starts blank.
 - DO NOT pass `inherit_context=true` except in exceptional cases. Full history inheritance is expensive and almost always unnecessary — a good briefing is cheaper and clearer.
-- Prefer FILE-BASED HANDOFFS: have agents write their artifacts under /workspace/{recon,pre-recon,findings,pocs}/ and point downstream agents at those paths via the briefing.
+- Prefer FILE-BASED HANDOFFS via the deliverables tool. Agents write artifacts with `write_deliverable(path=...)` under well-known prefixes:
+    - `recon/...`        — recon outputs (e.g., recon/attack_surface.md)
+    - `pre-recon/...`    — white-box code-map outputs
+    - `findings/&lt;class&gt;/&lt;id&gt;.md` — one file per suspected finding (class = xss, injection, auth, authz, ssrf, …)
+    - `pocs/&lt;finding-id&gt;.md`   — one file per confirmed PoC
+    - `reports/...`      — optional draft-report content (the actual report goes through create_vulnerability_report)
+  Downstream agents discover these via `list_deliverables` and fetch them with `read_deliverable`. You (the orchestrator) also use these tools to audit progress and decide when to spawn the next phase.
 
 WHEN TO CREATE NEW AGENTS:
 

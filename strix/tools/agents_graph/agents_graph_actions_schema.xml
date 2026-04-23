@@ -106,8 +106,8 @@ Only create a new agent if no existing agent is handling the specific task.</des
   # Spawn a recon agent with a concise briefing (no full-history inheritance)
   <function=create_agent>
   <parameter=task>Map the attack surface for the deployed web app: enumerate subdomains, open ports,
-              tech stack, all reachable endpoints and their parameters. Produce a written map in
-              /workspace/recon/attack_surface.md.</parameter>
+              tech stack, all reachable endpoints and their parameters. Write the map via
+              write_deliverable at path="recon/attack_surface.md".</parameter>
   <parameter=name>Recon Agent</parameter>
   <parameter=role>recon</parameter>
   <parameter=briefing>Target: https://example.com (authorized for full pentest).
@@ -118,10 +118,11 @@ Only create a new agent if no existing agent is handling the specific task.</des
   # Spawn a vuln-discovery specialist with a type-scoped role
   <function=create_agent>
   <parameter=task>Identify XSS sinks in the /search and /comments endpoints. For each suspected sink,
-              trace source → sink and write a finding to /workspace/findings/xss/&lt;id&gt;.md.</parameter>
+              trace source → sink and write a finding via write_deliverable at
+              path="findings/xss/&lt;id&gt;.md" (one deliverable per finding).</parameter>
   <parameter=name>XSS Discovery Agent</parameter>
   <parameter=role>vuln-xss</parameter>
-  <parameter=briefing>Target map: /workspace/recon/attack_surface.md.
+  <parameter=briefing>Target map deliverable: recon/attack_surface.md (use read_deliverable).
               Focus endpoints: GET /search?q=, POST /comments. Both echo user input in HTML body.
               Auth required for /comments — test credentials stored in /workspace/creds.env.</parameter>
   </function>
@@ -129,11 +130,11 @@ Only create a new agent if no existing agent is handling the specific task.</des
   # Spawn an exploit-phase validator for a specific finding
   <function=create_agent>
   <parameter=task>Build a working PoC for the reflected XSS in /search?q=. Capture the payload,
-              the HTTP request, and evidence of execution (cookie exfil or JS alert). Save to
-              /workspace/pocs/xss-search.md.</parameter>
+              the HTTP request, and evidence of execution (cookie exfil or JS alert). Save via
+              write_deliverable at path="pocs/xss-search.md".</parameter>
   <parameter=name>XSS Exploit Validator</parameter>
   <parameter=role>exploit-xss</parameter>
-  <parameter=briefing>Finding: /workspace/findings/xss/001.md.
+  <parameter=briefing>Finding deliverable to validate: findings/xss/001.md (read_deliverable).
               Summary: &lt;script&gt; reflected unsanitized in search result page, context = HTML body,
               no CSP. Try basic alert() payload first, then cookie exfil variant.</parameter>
   </function>
@@ -144,8 +145,8 @@ Only create a new agent if no existing agent is handling the specific task.</des
               create_vulnerability_report. Include severity, CWE, reproduction steps, impact.</parameter>
   <parameter=name>XSS Reporter</parameter>
   <parameter=role>report</parameter>
-  <parameter=briefing>Confirmed finding: /workspace/findings/xss/001.md.
-              PoC: /workspace/pocs/xss-search.md.
+  <parameter=briefing>Confirmed finding deliverable: findings/xss/001.md.
+              PoC deliverable: pocs/xss-search.md. Read both with read_deliverable.
               Severity rationale: session cookie not HttpOnly; cookie exfil PoC succeeded.</parameter>
   </function>
     </examples>

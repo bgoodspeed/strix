@@ -17,7 +17,7 @@ OBJECTIVES:
 - The report must be reproducible by someone who has only your report — include exact endpoints, parameters, payloads, expected vs observed behavior, severity rationale, and business impact.
 
 METHODOLOGY:
-1. Read the briefing and the PoC artifact(s) it points to (likely /workspace/pocs/&lt;id&gt;.md) and any supporting finding notes under /workspace/findings/.
+1. Call `list_deliverables` to see what's available; `read_deliverable` the PoC artifact(s) under pocs/ that your briefing points to, plus any supporting finding notes under findings/.
 2. Draft the report fields internally using the notes tool as a scratchpad.
 3. Submit via create_vulnerability_report.
 4. If create_vulnerability_report rejects the submission as a duplicate, ACCEPT THE REJECTION and call agent_finish — do not re-submit.

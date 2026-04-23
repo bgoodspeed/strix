@@ -1,0 +1,103 @@
+<tools>
+  <tool name="write_deliverable">
+    <description>Write a structured deliverable artifact under the shared deliverables root so downstream agents can consume it without inheriting your message history.</description>
+    <details>Use this instead of writing handoff files with `str_replace_editor`.
+
+  Root path: /workspace/.strix/deliverables/
+
+  The `path` parameter is RELATIVE to that root. Conventional layout:
+    - recon/attack_surface.md              (black-box recon output)
+    - pre-recon/code_map.md                (white-box code understanding output)
+    - findings/&lt;class&gt;/&lt;id&gt;.md              (one file per suspected finding)
+    - pocs/&lt;finding-id&gt;.md                 (one file per confirmed PoC)
+    - reports/&lt;id&gt;.md                      (optional: draft report content)
+
+  The file is created (with parent dirs) or OVERWRITTEN on each call. To append, first
+  read_deliverable then write the concatenated content.</details>
+    <parameters>
+      <parameter name="path" type="string" required="true">
+        <description>Relative path under /workspace/.strix/deliverables/. No leading '/' or '..' segments. Example: "findings/xss/001.md".</description>
+      </parameter>
+      <parameter name="content" type="string" required="true">
+        <description>Full textual content of the deliverable. Markdown recommended for readability; JSON fine for structured queues.</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing: - success: Whether the write succeeded - path: Absolute path of the written file - bytes_written: Size of the written content</description>
+    </returns>
+    <examples>
+  # A recon agent writes an attack-surface map
+  <function=write_deliverable>
+  <parameter=path>recon/attack_surface.md</parameter>
+  <parameter=content># Attack surface for example.com
+
+## Subdomains
+- www.example.com
+- api.example.com (REST)
+- admin.example.com (403 without auth, bypass suspected)
+
+## Endpoints worth testing
+- POST /api/v1/login (user-controlled JSON body)
+- GET /search?q= (reflects query unsanitized)
+</parameter>
+  </function>
+
+  # A discovery agent writes a single finding
+  <function=write_deliverable>
+  <parameter=path>findings/xss/001.md</parameter>
+  <parameter=content># XSS-001: Reflected XSS in /search
+
+- Source: query param `q` on GET /search
+- Sink: HTML body, no encoding observed
+- Context: HTML_BODY
+- Witness payload: &lt;script&gt;1&lt;/script&gt;
+- Confidence: high
+- Notes: No CSP; likely cookie exfil impact.
+</parameter>
+  </function>
+    </examples>
+  </tool>
+  <tool name="read_deliverable">
+    <description>Read a deliverable artifact written by you or another agent.</description>
+    <details>Path is relative to /workspace/.strix/deliverables/, matching the convention from
+  write_deliverable. Returns the full file content. If you just want to discover what's
+  available, call list_deliverables first.</details>
+    <parameters>
+      <parameter name="path" type="string" required="true">
+        <description>Relative path under /workspace/.strix/deliverables/. Example: "recon/attack_surface.md".</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing: - success: Whether the read succeeded - path: Absolute path of the file - content: Full text content of the deliverable</description>
+    </returns>
+    <examples>
+  # An exploit agent pulls the finding it was told to validate
+  <function=read_deliverable>
+  <parameter=path>findings/xss/001.md</parameter>
+  </function>
+    </examples>
+  </tool>
+  <tool name="list_deliverables">
+    <description>List deliverables written by agents in this run, optionally filtered by a kind prefix. Use this at the start of your work to discover what upstream agents have produced.</description>
+    <details>Returns path, size, and a short preview (first content line) for each deliverable.
+  Pass `kind` to scope to a subdirectory like "findings", "findings/xss", "recon", "pocs".</details>
+    <parameters>
+      <parameter name="kind" type="string" required="false">
+        <description>Optional path prefix under the deliverables root (e.g. "findings/xss"). Omit to list everything.</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing: - success: Whether the list succeeded - deliverables: List of matching deliverables with path/size/preview - total_count: Number of deliverables returned - root: The deliverables root directory</description>
+    </returns>
+    <examples>
+  # An exploit-phase agent discovers what the discovery phase wrote
+  <function=list_deliverables>
+  <parameter=kind>findings/xss</parameter>
+  </function>
+
+  # A reporting agent scans the whole set
+  <function=list_deliverables>
+  </function>
+    </examples>
+  </tool>
+</tools>

@@ -25,12 +25,12 @@ AGGRESSIVE DISCOVERY MANDATE:
 - PERSISTENCE PAYS - the best vulnerabilities are found after thousands of attempts
 
 ASSESSMENT METHODOLOGY:
-1. Read the briefing and any prior recon artifacts (/workspace/recon/, /workspace/pre-recon/)
-2. Enumerate candidate inputs / sinks for your vulnerability class
-3. Automated scanning with class-appropriate tools (sqlmap, ffuf templates, nuclei templates, etc.)
-4. Manual verification: craft payloads, spray them in a single batched script (see tool_format rules), observe responses
-5. For each suspected finding, record a finding file under /workspace/findings/&lt;class&gt;/&lt;id&gt;.md with: source, sink, path, payload, observed behavior, confidence
-6. EXHAUSTIVE TESTING - try every combination of encodings, wrappers, contexts relevant to your class
+1. Call `list_deliverables` to discover prior recon / pre-recon artifacts; `read_deliverable` the relevant ones (e.g. recon/attack_surface.md, pre-recon/code_map.md).
+2. Enumerate candidate inputs / sinks for your vulnerability class.
+3. Automated scanning with class-appropriate tools (sqlmap, ffuf templates, nuclei templates, etc.).
+4. Manual verification: craft payloads, spray them in a single batched script (see tool_format rules), observe responses.
+5. For each suspected finding, `write_deliverable` at path="findings/&lt;class&gt;/&lt;id&gt;.md" with: source, sink, path, payload, observed behavior, confidence. Use one file per finding.
+6. EXHAUSTIVE TESTING - try every combination of encodings, wrappers, contexts relevant to your class.
 
 EFFICIENCY TACTICS:
 - Automate with Python scripts (asyncio/aiohttp) for large sprays; do NOT iterate payloads one-tool-call-at-a-time.
@@ -43,7 +43,7 @@ VALIDATION BOUNDARY:
 - If you stumble into a live PoC while probing, great — capture it, but don't spend your budget polishing it into a report. That's downstream work.
 
 STOP CONDITIONS:
-- You have documented all promising findings under /workspace/findings/&lt;class&gt;/ AND either
+- You have written all promising findings as deliverables under findings/&lt;class&gt;/ AND either
   (a) exhausted the class's attack surface for this scope, or
   (b) confirmed enough findings for the exploit phase to work on.
 </execution_guidelines>
