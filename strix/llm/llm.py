@@ -23,7 +23,7 @@ from strix.utils.resource_paths import get_strix_resource_path
 
 
 litellm.drop_params = True
-litellm.modify_params = True
+litellm.modify_params = False  # CRITICAL: Prevent litellm from modifying our messages
 
 
 class LLMRequestFailedError(Exception):
@@ -241,9 +241,13 @@ class LLM:
                             blocks_removed += 1
                             continue
 
-                        filtered_content.append(block)
+                        # Create a deep copy to avoid shared references
+                        import copy
+                        filtered_content.append(copy.deepcopy(block))
                     else:
-                        filtered_content.append(block)
+                        # Create a deep copy to avoid shared references
+                        import copy
+                        filtered_content.append(copy.deepcopy(block))
 
                 sanitized_message['content'] = filtered_content
 

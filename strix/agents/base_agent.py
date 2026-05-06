@@ -428,8 +428,9 @@ class BaseAgent(metaclass=AgentMeta):
             self.state.add_error("Tool execution cancelled by user")
             raise
 
-        # Create a copy to prevent external modifications from corrupting state
-        self.state.messages = list(conversation_history)
+        # Create a deep copy to prevent external modifications from corrupting state
+        import copy
+        self.state.messages = copy.deepcopy(conversation_history)
 
         if should_agent_finish:
             self.state.set_completed({"success": True})
