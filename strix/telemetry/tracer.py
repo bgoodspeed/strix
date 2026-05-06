@@ -598,6 +598,121 @@ class Tracer:
         if status in ("completed", "failed", "error", "stopped", "stopping", "finished"):
             self._write_scan_progress()
 
+    def track_recovery_attempt(
+        self,
+        agent_id: str,
+        retry_count: int,
+        success: bool,
+        error_message: str | None = None,
+        recovery_type: str = "automatic"
+    ) -> None:
+        """Track agent recovery attempt events.
+
+        Args:
+            agent_id: ID of the agent being recovered
+            retry_count: Current retry attempt number
+            success: Whether the recovery attempt succeeded
+            error_message: Optional error message if recovery failed
+            recovery_type: Type of recovery (automatic, manual, deadlock)
+        """
+        self._emit_event(
+            "agent.recovery.attempted",
+            actor={"agent_id": agent_id},
+            payload={
+                "retry_count": retry_count,
+                "recovery_type": recovery_type,
+                "error_message": error_message
+            },
+            status="success" if success else "failed",
+            error=error_message if not success else None,
+            source="strix.recovery",
+        )
+
+    def track_deadlock_detection(
+        self,
+        agent_id: str,
+        stuck_duration_seconds: float,
+        recovery_attempted: bool,
+        recovery_success: bool | None = None
+    ) -> None:
+        """Track deadlock detection events.
+
+        Args:
+            agent_id: ID of the deadlocked agent
+            stuck_duration_seconds: How long agent was stuck
+            recovery_attempted: Whether recovery was attempted
+            recovery_success: Whether recovery succeeded (if attempted)
+        """
+        self._emit_event(
+            "agent.deadlock.detected",
+            actor={"agent_id": agent_id},
+            payload={
+                "stuck_duration_seconds": stuck_duration_seconds,
+                "recovery_attempted": recovery_attempted,
+                "recovery_success": recovery_success
+            },
+            status="deadlocked",
+            source="strix.deadlock",
+        )
+
+    def track_thinking_block_sanitization(
+        self,
+        agent_id: str,
+        blocks_removed: int,
+        total_blocks: int,
+        error_prevented: bool = True
+    ) -> None:
+        """Track thinking block sanitization events.
+
+        Args:
+            agent_id: ID of the agent whose conversation was sanitized
+            blocks_removed: Number of thinking blocks removed
+            total_blocks: Total number of blocks processed
+            error_prevented: Whether this prevented an API error
+        """
+        self._emit_event(
+            "agent.thinking_blocks.sanitized",
+            actor={"agent_id": agent_id},
+            payload={
+                "blocks_removed": blocks_removed,
+                "total_blocks": total_blocks,
+                "error_prevented": error_prevented,
+                "sanitization_rate": (blocks_removed / total_blocks) if total_blocks > 0 else 0
+            },
+            status="sanitized",
+            source="strix.llm",
+        )
+
+    def track_scan_health_check(
+        self,
+        overall_status: str,
+        issues_found: int,
+        stuck_agents: int,
+        failed_agents: int,
+        metrics: dict[str, Any] | None = None
+    ) -> None:
+        """Track scan health check events.
+
+        Args:
+            overall_status: Overall health status (healthy, warning, critical)
+            issues_found: Total number of issues found
+            stuck_agents: Number of stuck agents detected
+            failed_agents: Number of failed agents
+            metrics: Additional health metrics
+        """
+        self._emit_event(
+            "scan.health.checked",
+            payload={
+                "overall_status": overall_status,
+                "issues_found": issues_found,
+                "stuck_agents": stuck_agents,
+                "failed_agents": failed_agents,
+                "metrics": metrics or {}
+            },
+            status=overall_status,
+            source="strix.monitoring",
+        )
+
     def set_scan_config(self, config: dict[str, Any]) -> None:
         self.scan_config = config
         self.run_metadata.update(

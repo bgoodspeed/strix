@@ -178,6 +178,14 @@ class BaseAgent(metaclass=AgentMeta):
                 await self._wait_for_input()
                 continue
 
+            # Check for deadlock periodically (before incrementing iteration)
+            if self._should_check_deadlock():
+                deadlock_detected = await self._check_deadlock()
+                if deadlock_detected:
+                    deadlock_handled = await self._handle_deadlock(tracer)
+                    if not deadlock_handled:
+                        continue  # Agent entered waiting state, continue loop
+
             self.state.increment_iteration()
 
             if (
@@ -608,3 +616,140 @@ class BaseAgent(metaclass=AgentMeta):
             except RuntimeError:
                 self._current_task.cancel()
         self._current_task = None
+
+    async def _check_deadlock(self) -> bool:
+        """Detect if agent has been stuck too long without activity.
+
+        Returns:
+            bool: True if agent appears to be deadlocked
+        """
+        try:
+            # Get deadlock configuration from agent recovery config
+            from strix.tools.agents_graph.agents_graph_actions import get_recovery_config
+
+            config = get_recovery_config()
+            deadlock_timeout_seconds = config.get("deadlock_timeout_seconds", 1800)  # 30 minutes default
+
+            if not self.state.last_updated:
+                return False
+
+            # Parse last update time
+            try:
+                last_update = datetime.fromisoformat(self.state.last_updated.replace('Z', '+00:00'))
+                current_time = datetime.now(UTC)
+                seconds_since_update = (current_time - last_update).total_seconds()
+
+                # Check if agent has been inactive too long
+                if seconds_since_update > deadlock_timeout_seconds:
+                    logger.warning(
+                        f"Agent {self.state.agent_id} ({self.state.agent_name}) appears deadlocked: "
+                        f"{seconds_since_update:.1f}s since last activity (threshold: {deadlock_timeout_seconds}s)"
+                    )
+                    return True
+
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Error parsing last_updated time for agent {self.state.agent_id}: {e}")
+                return False
+
+            return False
+
+        except Exception as e:
+            logger.warning(f"Error in deadlock detection for agent {self.state.agent_id}: {e}")
+            return False
+
+    async def _handle_deadlock(self, tracer: Optional["Tracer"] = None) -> bool:
+        """Handle detected deadlock situation.
+
+        Returns:
+            bool: True if deadlock was handled and agent should continue, False if agent should stop
+        """
+        try:
+            deadlock_msg = (
+                f"DEADLOCK DETECTED: Agent {self.state.agent_name} ({self.state.agent_id}) "
+                f"has been inactive for too long. Attempting recovery..."
+            )
+
+            logger.error(deadlock_msg)
+            self.state.add_error("Deadlock detected - agent stuck without activity")
+
+            # Log deadlock event to telemetry
+            if tracer:
+                try:
+                    # Calculate stuck duration
+                    stuck_duration = 0.0
+                    if self.state.last_updated:
+                        last_update = datetime.fromisoformat(self.state.last_updated.replace('Z', '+00:00'))
+                        stuck_duration = (datetime.now(UTC) - last_update).total_seconds()
+
+                    # Determine recovery outcome based on agent type
+                    recovery_attempted = True
+                    recovery_success = self.non_interactive or self.state.parent_id is None
+
+                    tracer.track_deadlock_detection(
+                        agent_id=self.state.agent_id,
+                        stuck_duration_seconds=stuck_duration,
+                        recovery_attempted=recovery_attempted,
+                        recovery_success=recovery_success
+                    )
+                    tracer.update_agent_status(self.state.agent_id, "deadlocked")
+                except Exception as e:
+                    logger.warning(f"Failed to log deadlock event to telemetry: {e}")
+
+            # For non-interactive agents or root agents, attempt self-recovery
+            if self.non_interactive or self.state.parent_id is None:
+                recovery_message = (
+                    "SYSTEM RECOVERY: You appear to be stuck in a deadlock situation. "
+                    "Your last activity was too long ago. Please take immediate action to:\n"
+                    "1. Assess your current progress on the assigned task\n"
+                    "2. Identify what specifically you were trying to accomplish\n"
+                    "3. Take concrete action to move forward or use finish tools if appropriate\n"
+                    "4. If you're truly stuck, clearly state what assistance you need\n\n"
+                    "This is an automated recovery attempt. Please respond with your next action."
+                )
+
+                self.state.add_message("user", recovery_message)
+                self.state.last_updated = datetime.now(UTC).isoformat()
+
+                # Reset iteration counter slightly to give some room for recovery
+                if self.state.iteration > 10:
+                    self.state.iteration = max(10, self.state.iteration - 5)
+
+                return True  # Continue execution with recovery message
+
+            else:
+                # For sub-agents, notify parent and enter waiting state
+                try:
+                    from strix.tools.agents_graph.agents_graph_actions import send_user_message_to_agent
+
+                    if self.state.parent_id:
+                        notification_msg = (
+                            f"DEADLOCK ALERT: Sub-agent '{self.state.agent_name}' "
+                            f"({self.state.agent_id}) appears to be deadlocked. "
+                            f"Task: {self.state.task}. "
+                            f"Last activity: {self.state.last_updated}. "
+                            f"Consider manual intervention or agent restart."
+                        )
+
+                        send_user_message_to_agent(self.state.parent_id, notification_msg)
+
+                except Exception as e:
+                    logger.warning(f"Failed to notify parent of deadlock: {e}")
+
+                # Enter waiting state for manual intervention
+                await self._enter_waiting_state(tracer, error_occurred=True)
+                return False  # Stop execution and wait for intervention
+
+        except Exception as e:
+            logger.error(f"Error handling deadlock for agent {self.state.agent_id}: {e}")
+            # If deadlock handling itself fails, stop the agent
+            if tracer:
+                tracer.update_agent_status(self.state.agent_id, "error")
+            return False
+
+    def _should_check_deadlock(self) -> bool:
+        """Determine if we should check for deadlock this iteration.
+
+        Check deadlock periodically rather than every iteration to avoid overhead.
+        """
+        # Check deadlock every 10 iterations
+        return (self.state.iteration % 10) == 0

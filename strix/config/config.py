@@ -45,6 +45,18 @@ class Config:
     strix_sandbox_execution_timeout = "120"
     strix_sandbox_connect_timeout = "10"
 
+    # Recovery System Configuration
+    strix_recovery_retry_delay_seconds = "300"
+    strix_recovery_max_retries = "3"
+    strix_recovery_deadlock_timeout_seconds = "1800"
+    strix_recovery_enable_auto_recovery = "true"
+    strix_recovery_stuck_agent_minutes = "30"
+    strix_recovery_failure_rate_percent = "50"
+    strix_recovery_scan_progress_stall_minutes = "60"
+    strix_recovery_alert_channels = "log,file"
+    strix_recovery_webhook_url = None
+    strix_recovery_slack_webhook_url = None
+
     # Telemetry
     strix_telemetry = "1"
     strix_otel_telemetry = None

@@ -685,3 +685,413 @@ def wait_for_message(
                 "Waiting timeout reached",
             ],
         }
+
+
+# Agent recovery configuration - loaded from main Strix config
+def _get_recovery_config() -> dict[str, Any]:
+    """Get recovery configuration from Strix config with fallback defaults."""
+    from strix.config.config import Config
+
+    def get_bool(value: str) -> bool:
+        return value.lower() in ('true', '1', 'yes', 'on')
+
+    def get_int(value: str, default: int) -> int:
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    def get_float(value: str, default: float) -> float:
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    return {
+        "retry_delay_seconds": get_int(Config.get("strix_recovery_retry_delay_seconds") or "300", 300),
+        "max_retries": get_int(Config.get("strix_recovery_max_retries") or "3", 3),
+        "deadlock_timeout_seconds": get_int(Config.get("strix_recovery_deadlock_timeout_seconds") or "1800", 1800),
+        "enable_auto_recovery": get_bool(Config.get("strix_recovery_enable_auto_recovery") or "true"),
+        "alert_thresholds": {
+            "stuck_agent_minutes": get_int(Config.get("strix_recovery_stuck_agent_minutes") or "30", 30),
+            "failure_rate_percent": get_float(Config.get("strix_recovery_failure_rate_percent") or "50", 50.0)
+        }
+    }
+
+# Track recovery attempts
+_recovery_attempts: dict[str, int] = {}
+_last_recovery_check: datetime | None = None
+
+
+def _monitor_and_recover_failed_agents() -> dict[str, Any]:
+    """Periodically check for failed agents and attempt recovery.
+
+    This function should be called periodically (e.g., every 5 minutes)
+    from the root agent main loop to automatically recover failed agents.
+
+    Returns:
+        dict: Summary of recovery actions taken
+    """
+    global _last_recovery_check
+
+    config = _get_recovery_config()
+    if not config["enable_auto_recovery"]:
+        return {"recovery_enabled": False, "message": "Auto-recovery is disabled"}
+
+    current_time = datetime.now(UTC)
+    _last_recovery_check = current_time
+
+    recovery_actions = {
+        "check_time": current_time.isoformat(),
+        "agents_checked": 0,
+        "failed_agents_found": 0,
+        "recovery_attempts": 0,
+        "successful_recoveries": 0,
+        "skipped_max_retries": 0,
+        "errors": []
+    }
+
+    try:
+        for agent_id, agent_node in _agent_graph["nodes"].items():
+            recovery_actions["agents_checked"] += 1
+
+            # Check for failed agents
+            status = agent_node.get("status")
+            if status in ["error", "failed"]:
+                recovery_actions["failed_agents_found"] += 1
+
+                # Check if we should attempt recovery
+                retry_count = _recovery_attempts.get(agent_id, 0)
+                if retry_count >= config["max_retries"]:
+                    recovery_actions["skipped_max_retries"] += 1
+                    continue
+
+                try:
+                    result = _respawn_failed_agent(agent_id)
+                    recovery_actions["recovery_attempts"] += 1
+
+                    if result.get("success", False):
+                        recovery_actions["successful_recoveries"] += 1
+
+                        # Log recovery attempt to telemetry
+                        try:
+                            from strix.telemetry.tracer import get_global_tracer
+                            tracer = get_global_tracer()
+                            if tracer:
+                                tracer.track_recovery_attempt(agent_id, retry_count + 1, True, recovery_type="automatic")
+                        except (ImportError, AttributeError):
+                            pass
+
+                    else:
+                        recovery_actions["errors"].append(f"Failed to recover agent {agent_id}: {result.get('error', 'Unknown error')}")
+
+                except Exception as e:
+                    recovery_actions["errors"].append(f"Exception recovering agent {agent_id}: {str(e)}")
+
+            # Check for stuck agents (no activity for too long)
+            elif status == "running":
+                started_at = agent_node.get("started_at")
+                if started_at:
+                    try:
+                        start_time = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                        minutes_running = (current_time - start_time).total_seconds() / 60
+
+                        if minutes_running > config["deadlock_timeout_seconds"] / 60:
+                            # Agent appears stuck - treat as failed
+                            recovery_actions["failed_agents_found"] += 1
+
+                            try:
+                                result = _respawn_failed_agent(agent_id, fresh_context=True)
+                                recovery_actions["recovery_attempts"] += 1
+
+                                if result.get("success", False):
+                                    recovery_actions["successful_recoveries"] += 1
+                                else:
+                                    recovery_actions["errors"].append(f"Failed to recover stuck agent {agent_id}: {result.get('error', 'Unknown error')}")
+                            except Exception as e:
+                                recovery_actions["errors"].append(f"Exception recovering stuck agent {agent_id}: {str(e)}")
+
+                    except (ValueError, TypeError) as e:
+                        recovery_actions["errors"].append(f"Error parsing start time for agent {agent_id}: {str(e)}")
+
+        return recovery_actions
+
+    except Exception as e:
+        recovery_actions["errors"].append(f"Critical error in monitoring: {str(e)}")
+        return recovery_actions
+
+
+def _respawn_failed_agent(agent_id: str, fresh_context: bool = False) -> dict[str, Any]:
+    """Create new agent to replace failed one.
+
+    Args:
+        agent_id: ID of the failed agent to replace
+        fresh_context: If True, start with fresh context instead of inheriting
+
+    Returns:
+        dict: Result of the respawn attempt
+    """
+    try:
+        if agent_id not in _agent_graph["nodes"]:
+            return {
+                "success": False,
+                "error": f"Agent {agent_id} not found in graph",
+                "new_agent_id": None
+            }
+
+        failed_agent = _agent_graph["nodes"][agent_id]
+
+        # Increment retry count
+        _recovery_attempts[agent_id] = _recovery_attempts.get(agent_id, 0) + 1
+        retry_count = _recovery_attempts[agent_id]
+
+        config = _get_recovery_config()
+        if retry_count > config["max_retries"]:
+            return {
+                "success": False,
+                "error": f"Max retries ({config['max_retries']}) exceeded for agent {agent_id}",
+                "new_agent_id": None,
+                "retry_count": retry_count
+            }
+
+        # Stop the failed agent if still running
+        if agent_id in _running_agents:
+            try:
+                stop_agent(agent_id)
+            except Exception as e:
+                # Continue with recovery even if stop fails
+                pass
+
+        # Mark the old agent as recovered
+        failed_agent["status"] = "replaced"
+        failed_agent["finished_at"] = datetime.now(UTC).isoformat()
+        failed_agent["result"] = {
+            "summary": f"Agent failed and was automatically recovered (attempt {retry_count})",
+            "success": False,
+            "auto_recovered": True,
+            "retry_count": retry_count
+        }
+
+        # Get parent agent for context
+        parent_id = failed_agent.get("parent_id")
+        if not parent_id:
+            return {
+                "success": False,
+                "error": f"No parent found for failed agent {agent_id} - cannot recover root agents",
+                "new_agent_id": None
+            }
+
+        # Prepare new agent parameters
+        task = failed_agent.get("task", "Continue the work of the failed agent")
+        name = f"{failed_agent.get('name', 'Unknown')}-recovery-{retry_count}"
+        role = failed_agent.get("role")
+
+        # Create briefing about the failure
+        briefing = f"""RECOVERY BRIEFING:
+You are a recovery agent replacing a failed agent.
+
+Failed Agent Info:
+- Original Agent: {failed_agent.get('name', 'Unknown')} ({agent_id})
+- Original Task: {task}
+- Failure Reason: {failed_agent.get('result', {}).get('error', 'Unknown error')}
+- Retry Attempt: {retry_count}/{_RECOVERY_CONFIG['max_retries']}
+
+Instructions:
+1. Continue the work where the failed agent left off
+2. Be aware that this is a recovery scenario - some context may be lost
+3. Focus on completing the original task successfully
+4. Report any persistent issues that might indicate systemic problems
+"""
+
+        # Find parent agent state for creating new agent
+        parent_state = _agent_states.get(parent_id)
+        if not parent_state:
+            return {
+                "success": False,
+                "error": f"Parent agent state not found for {parent_id}",
+                "new_agent_id": None
+            }
+
+        # Create replacement agent
+        inherit_context = not fresh_context  # Inherit context unless specifically requested not to
+        skills = None  # Will inherit from role if specified
+
+        result = create_agent(
+            agent_state=parent_state,
+            task=task,
+            name=name,
+            inherit_context=inherit_context,
+            skills=skills,
+            briefing=briefing,
+            role=role
+        )
+
+        if result.get("success", False):
+            new_agent_id = result.get("agent_id")
+
+            # Update the new agent's metadata to indicate it's a recovery
+            if new_agent_id and new_agent_id in _agent_graph["nodes"]:
+                new_node = _agent_graph["nodes"][new_agent_id]
+                new_node["is_recovery"] = True
+                new_node["replaces_agent_id"] = agent_id
+                new_node["recovery_attempt"] = retry_count
+
+            return {
+                "success": True,
+                "message": f"Successfully spawned recovery agent {name}",
+                "new_agent_id": new_agent_id,
+                "old_agent_id": agent_id,
+                "retry_count": retry_count,
+                "briefing_provided": True
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Failed to create recovery agent: {result.get('error', 'Unknown error')}",
+                "new_agent_id": None,
+                "retry_count": retry_count
+            }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Exception during agent recovery: {str(e)}",
+            "new_agent_id": None,
+            "retry_count": _recovery_attempts.get(agent_id, 0)
+        }
+
+
+@register_tool(sandbox_execution=False)
+def check_and_recover_agents(agent_state: Any) -> dict[str, Any]:
+    """Manual trigger for agent monitoring and recovery.
+
+    This tool can be called by the root agent or administrators to manually
+    trigger the agent recovery process.
+    """
+    try:
+        result = _monitor_and_recover_failed_agents()
+
+        # Format for user-friendly output
+        summary = []
+        if result["agents_checked"] > 0:
+            summary.append(f"Checked {result['agents_checked']} agents")
+
+        if result["failed_agents_found"] > 0:
+            summary.append(f"Found {result['failed_agents_found']} failed/stuck agents")
+
+        if result["recovery_attempts"] > 0:
+            summary.append(f"Attempted {result['recovery_attempts']} recoveries")
+
+        if result["successful_recoveries"] > 0:
+            summary.append(f"Successfully recovered {result['successful_recoveries']} agents")
+
+        if result["skipped_max_retries"] > 0:
+            summary.append(f"Skipped {result['skipped_max_retries']} agents (max retries exceeded)")
+
+        if result["errors"]:
+            summary.append(f"Encountered {len(result['errors'])} errors")
+
+        message = "; ".join(summary) if summary else "No recovery actions needed"
+
+        return {
+            "success": True,
+            "message": message,
+            "details": result,
+            "recovery_config": _RECOVERY_CONFIG
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to run recovery check: {str(e)}",
+            "details": None
+        }
+
+
+def get_recovery_config() -> dict[str, Any]:
+    """Get current recovery configuration."""
+    return _get_recovery_config()
+
+
+def update_recovery_config(config_updates: dict[str, Any]) -> dict[str, Any]:
+    """Update recovery configuration through Strix config system.
+
+    Args:
+        config_updates: Dictionary of configuration values to update
+
+    Returns:
+        dict: Success status and updated configuration
+    """
+    try:
+        from strix.config.config import Config
+
+        # Map user-friendly keys to Strix config keys
+        key_mapping = {
+            "retry_delay_seconds": "strix_recovery_retry_delay_seconds",
+            "max_retries": "strix_recovery_max_retries",
+            "deadlock_timeout_seconds": "strix_recovery_deadlock_timeout_seconds",
+            "enable_auto_recovery": "strix_recovery_enable_auto_recovery",
+            "stuck_agent_minutes": "strix_recovery_stuck_agent_minutes",
+            "failure_rate_percent": "strix_recovery_failure_rate_percent",
+            "scan_progress_stall_minutes": "strix_recovery_scan_progress_stall_minutes",
+            "alert_channels": "strix_recovery_alert_channels",
+            "webhook_url": "strix_recovery_webhook_url",
+            "slack_webhook_url": "strix_recovery_slack_webhook_url"
+        }
+
+        # Handle nested alert_thresholds
+        flat_updates = {}
+        for key, value in config_updates.items():
+            if key == "alert_thresholds" and isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if sub_key in key_mapping:
+                        flat_updates[sub_key] = sub_value
+                    else:
+                        flat_updates[f"alert_thresholds.{sub_key}"] = sub_value
+            else:
+                flat_updates[key] = value
+
+        # Validate and convert keys
+        env_updates = {}
+        invalid_keys = []
+
+        for key, value in flat_updates.items():
+            if key in key_mapping:
+                env_key = key_mapping[key].upper()
+                env_updates[env_key] = str(value)
+            else:
+                invalid_keys.append(key)
+
+        if invalid_keys:
+            return {
+                "success": False,
+                "error": f"Invalid configuration keys: {invalid_keys}",
+                "valid_keys": list(key_mapping.keys())
+            }
+
+        # Load current config and update
+        current_config = Config.load()
+        env_vars = current_config.get("env", {})
+        env_vars.update(env_updates)
+
+        # Save updated config
+        updated_config = {"env": env_vars}
+        success = Config.save(updated_config)
+
+        if not success:
+            return {
+                "success": False,
+                "error": "Failed to save configuration to file"
+            }
+
+        return {
+            "success": True,
+            "message": "Recovery configuration updated in Strix config",
+            "updated_config": _get_recovery_config()
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to update recovery configuration: {str(e)}"
+        }

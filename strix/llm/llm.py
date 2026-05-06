@@ -199,7 +199,9 @@ class LLM:
                 }
             )
 
-        compressed = list(self.memory_compressor.compress_history(conversation_history))
+        # Sanitize conversation history to avoid API errors with thinking blocks
+        sanitized_history = self._sanitize_conversation_history(conversation_history)
+        compressed = list(self.memory_compressor.compress_history(sanitized_history))
         conversation_history.clear()
         conversation_history.extend(compressed)
         messages.extend(compressed)
@@ -211,6 +213,60 @@ class LLM:
             messages = self._add_cache_control(messages)
 
         return messages
+
+    def _sanitize_conversation_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove or preserve thinking blocks to avoid API errors.
+
+        Anthropic API errors can occur when trying to modify thinking blocks
+        that are immutable. This method filters out problematic thinking blocks
+        while preserving valid content.
+        """
+        sanitized = []
+        total_blocks = 0
+        blocks_removed = 0
+
+        for message in messages:
+            content = message.get('content')
+            sanitized_message = dict(message)  # Copy the message
+
+            if isinstance(content, list):
+                # Filter out thinking blocks that can't be modified
+                filtered_content = []
+                for block in content:
+                    total_blocks += 1
+                    if isinstance(block, dict):
+                        block_type = block.get('type')
+                        is_immutable = block.get('immutable', False)
+
+                        # Skip thinking blocks that are immutable or redacted
+                        if block_type in ['thinking', 'redacted_thinking'] and is_immutable:
+                            blocks_removed += 1
+                            continue
+
+                        filtered_content.append(block)
+                    else:
+                        filtered_content.append(block)
+
+                sanitized_message['content'] = filtered_content
+
+            sanitized.append(sanitized_message)
+
+        # Log sanitization to telemetry if blocks were removed
+        if blocks_removed > 0:
+            try:
+                from strix.telemetry.tracer import get_global_tracer
+                tracer = get_global_tracer()
+                if tracer and self.agent_id:
+                    tracer.track_thinking_block_sanitization(
+                        agent_id=self.agent_id,
+                        blocks_removed=blocks_removed,
+                        total_blocks=total_blocks,
+                        error_prevented=True
+                    )
+            except (ImportError, AttributeError):
+                pass
+
+        return sanitized
 
     def _build_completion_args(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if not self._supports_vision():
