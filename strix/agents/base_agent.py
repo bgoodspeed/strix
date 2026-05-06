@@ -413,7 +413,9 @@ class BaseAgent(metaclass=AgentMeta):
         for action in actions:
             self.state.add_action(action)
 
-        conversation_history = self.state.get_conversation_history()
+        # Create a deep copy for tool execution to prevent thinking block corruption
+        import copy
+        conversation_history = copy.deepcopy(self.state.get_conversation_history())
 
         tool_task = asyncio.create_task(
             process_tool_invocations(actions, conversation_history, self.state)
