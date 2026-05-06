@@ -3,12 +3,36 @@
 # Monitor Strix scan health and alert on stuck agents
 # Usage: ./monitor-scan.sh [run_directory] [check_interval_seconds]
 #
-# Example: ./monitor-scan.sh strix_runs/grow-441e-75040-beta-clio-dev_1695 300
+# If no run_directory is provided, automatically uses the newest run in strix_runs/
+# Examples:
+#   ./monitor-scan.sh                                                    # Uses newest run
+#   ./monitor-scan.sh strix_runs/grow-441e-75040-beta-clio-dev_1695      # Specific run
+#   ./monitor-scan.sh strix_runs/latest 60                              # Custom interval
 
 set -e
 
 # Configuration
-RUN_DIR="${1:-strix_runs/grow-441e-75040-beta-clio-dev_1695}"
+if [[ -n "$1" ]]; then
+    RUN_DIR="$1"
+else
+    # Find the newest run directory in strix_runs/
+    if [[ -d "strix_runs" ]]; then
+        NEWEST_RUN=$(ls -1t strix_runs/ 2>/dev/null | head -1)
+        if [[ -n "$NEWEST_RUN" ]]; then
+            RUN_DIR="strix_runs/$NEWEST_RUN"
+            echo "📁 Auto-detected newest run: $RUN_DIR"
+        else
+            echo "❌ No runs found in strix_runs/ directory"
+            echo "Usage: $0 [run_directory] [check_interval_seconds]"
+            exit 1
+        fi
+    else
+        echo "❌ strix_runs/ directory not found"
+        echo "Usage: $0 [run_directory] [check_interval_seconds]"
+        exit 1
+    fi
+fi
+
 CHECK_INTERVAL="${2:-300}"  # 5 minutes default
 STUCK_THRESHOLD_MINUTES=30
 ALERT_FILE="scan_alerts.log"
