@@ -31,7 +31,25 @@ def _run_agent_in_thread(
         if inherited_messages:
             state.add_message("user", "<inherited_context_from_parent>")
             for msg in inherited_messages:
-                state.add_message(msg["role"], msg["content"])
+                # Sanitize inherited content to remove immutable thinking blocks
+                content = msg["content"]
+                if isinstance(content, list):
+                    # Filter out immutable thinking blocks
+                    sanitized_content = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            block_type = block.get('type')
+                            is_immutable = block.get('immutable', False)
+                            # Skip immutable thinking/redacted blocks
+                            if block_type in ['thinking', 'redacted_thinking'] and is_immutable:
+                                continue
+                            # Deep copy to avoid shared references
+                            import copy
+                            sanitized_content.append(copy.deepcopy(block))
+                        else:
+                            sanitized_content.append(block)
+                    content = sanitized_content
+                state.add_message(msg["role"], content)
             state.add_message("user", "</inherited_context_from_parent>")
 
         if briefing:
