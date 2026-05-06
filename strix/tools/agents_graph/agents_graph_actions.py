@@ -324,6 +324,8 @@ def create_agent(
                 scan_mode = parent_agent.llm_config.scan_mode
 
         llm_config = LLMConfig(skills=skill_list, timeout=timeout, scan_mode=scan_mode, role=role)
+        # WORKAROUND: Disable thinking blocks for subagents until conversation corruption bug is fully resolved
+        llm_config.enable_thinking = False
 
         agent_config = {
             "llm_config": llm_config,
