@@ -202,8 +202,6 @@ class LLM:
         # Sanitize conversation history to avoid API errors with thinking blocks
         sanitized_history = self._sanitize_conversation_history(conversation_history)
         compressed = list(self.memory_compressor.compress_history(sanitized_history))
-        conversation_history.clear()
-        conversation_history.extend(compressed)
         messages.extend(compressed)
 
         if messages[-1].get("role") == "assistant":

@@ -228,3 +228,64 @@ def test_integration_thinking_block_api_error_scenario(llm):
         assert len(content) == 1
         assert content[0]["type"] == "text"
         assert content[0]["text"] == "I found a potential vulnerability."
+
+
+def test_prepare_messages_preserves_original_conversation_history(llm):
+    """Test that _prepare_messages does not modify the original conversation_history reference.
+
+    This test verifies the fix for the thinking block modification bug where
+    _prepare_messages was corrupting the original agent conversation state.
+    """
+    import copy
+
+    # Create conversation history with thinking blocks (like agent state)
+    original_conversation = [
+        {
+            "role": "user",
+            "content": "Test for vulnerabilities"
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "I'll start by analyzing the target."
+                },
+                {
+                    "type": "thinking",
+                    "content": "I need to check the API endpoints...",
+                    "immutable": True
+                }
+            ]
+        },
+        {
+            "role": "user",
+            "content": "Tool Results:\n\nPython session created successfully"
+        }
+    ]
+
+    # Create a deep copy to compare against
+    conversation_before = copy.deepcopy(original_conversation)
+
+    # Mock memory compressor to avoid complexity
+    with patch.object(llm.memory_compressor, 'compress_history') as mock_compress:
+        mock_compress.return_value = [{"role": "user", "content": "compressed"}]
+
+        # This call should NOT modify the original conversation_history
+        prepared = llm._prepare_messages(original_conversation)
+
+        # CRITICAL: Original conversation must be unchanged
+        assert original_conversation == conversation_before, \
+            "prepare_messages modified the original conversation_history reference"
+
+        # Verify the conversation still has thinking blocks in original
+        assistant_msg = original_conversation[1]
+        thinking_blocks = [block for block in assistant_msg["content"]
+                          if isinstance(block, dict) and block.get("type") == "thinking"]
+        assert len(thinking_blocks) == 1, \
+            "Original conversation should still contain thinking blocks"
+
+        # Verify prepared messages exist and are different from original
+        assert len(prepared) > 0, "Should have prepared messages"
+        assert prepared != original_conversation, \
+            "Prepared messages should be different from original"

@@ -48,11 +48,16 @@ except Exception as e:
     sys.exit(1)
 
 print(f"=== Scan Health Check at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+# Count actual failures including llm_failed
+actual_failed = status['summary']['failed']
+llm_failed_count = len([a for a in status['agents'] if a['status'] == 'llm_failed'])
+total_failed = actual_failed + llm_failed_count
+
 print(f"📊 Summary:")
 print(f"   Total agents: {status['summary']['total_agents']}")
 print(f"   Running: {status['summary']['running']}")
 print(f"   Completed: {status['summary']['completed']}")
-print(f"   Failed: {status['summary']['failed']}")
+print(f"   Failed: {total_failed} (reported: {status['summary']['failed']}, llm_failed: {llm_failed_count})")
 print(f"   Findings: {status['summary']['total_findings']}")
 
 # Calculate elapsed time
@@ -130,9 +135,40 @@ if stuck_agents:
 else:
     print(f"\\n✅ No stuck agents detected")
 
-# Check failure rate
+# Check for thinking block errors
+thinking_errors = []
+if llm_failed_count > 0:
+    # Read events.jsonl to check for thinking block errors
+    import os
+    events_file = os.path.join('$RUN_DIR', 'events.jsonl')
+    if os.path.exists(events_file):
+        with open(events_file) as f:
+            for line in f:
+                try:
+                    event = json.loads(line.strip())
+                    if ('thinking' in event.get('payload', {}).get('args', {}).get('details', '') or
+                        'redacted_thinking' in event.get('payload', {}).get('args', {}).get('details', '')):
+                        if 'cannot be modified' in event.get('payload', {}).get('args', {}).get('details', ''):
+                            agent_name = event.get('actor', {}).get('agent_name', 'Unknown')
+                            if agent_name not in [e['agent'] for e in thinking_errors]:
+                                thinking_errors.append({'agent': agent_name})
+                except:
+                    pass
+
+if thinking_errors:
+    print(f"\\n🧠 THINKING BLOCK ERRORS DETECTED:")
+    for error in thinking_errors:
+        print(f"   🔴 {error['agent']} - cannot modify thinking blocks")
+
+    alert_msg = f"{datetime.now().isoformat()}: THINKING_BLOCK_ERRORS: {len(thinking_errors)} agents failing on thinking block modification"
+    with open('$ALERT_FILE', 'a') as f:
+        f.write(alert_msg + "\\n")
+        for error in thinking_errors:
+            f.write(f"  - {error['agent']}: thinking block modification error\\n")
+
+# Check failure rate using actual failed count
 if status['summary']['total_agents'] > 0:
-    failure_rate = status['summary']['failed'] / status['summary']['total_agents']
+    failure_rate = total_failed / status['summary']['total_agents']
     if failure_rate > 0.5:
         print(f"\\n⚠️  HIGH FAILURE RATE: {failure_rate:.1%}")
         alert_msg = f"{datetime.now().isoformat()}: HIGH_FAILURE_RATE: {failure_rate:.1%}"
