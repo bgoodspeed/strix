@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "strix-agent"
-version = "0.8.2+bg3"
+version = "0.8.2+bg13"
 description = "Open-source AI Hackers for your apps"
 authors = ["Strix <hi@usestrix.com>"]
 readme = "README.md"
@@ -56,8 +56,8 @@ textual = "^4.0.0"
 xmltodict = "^0.13.0"
 requests = "^2.32.0"
 cvss = "^3.2"
-traceloop-sdk = "^0.53.0"
-opentelemetry-exporter-otlp-proto-http = "^1.40.0"
+opentelemetry-api = "^1.40.0"
+opentelemetry-sdk = "^1.40.0"
 scrubadub = "^2.0.1"
 
 # Optional LLM provider dependencies
@@ -153,7 +153,6 @@ module = [
     "cvss.*",
     "opentelemetry.*",
     "scrubadub.*",
-    "traceloop.*",
 ]
 ignore_missing_imports = true
 

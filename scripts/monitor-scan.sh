@@ -237,28 +237,31 @@ iteration=0
 while true; do
     iteration=$((iteration + 1))
 
-    # Check scan health
-    if check_scan_health; then
-        health_status=$?
-        case $health_status in
-            2)
-                echo -e "${RED}🚨 STUCK AGENTS DETECTED!${NC}"
-                send_notification "Stuck agents detected in scan" "error"
-                ;;
-            3)
-                echo -e "${YELLOW}⚠️  High failure rate detected${NC}"
-                send_notification "High failure rate detected in scan" "warning"
-                ;;
-            *)
-                if (( iteration % 4 == 0 )); then  # Every 4th check (20 min default)
-                    echo -e "${GREEN}✅ Scan healthy${NC}"
-                fi
-                ;;
-        esac
-    else
-        echo -e "${RED}❌ Failed to check scan health${NC}"
-        send_notification "Failed to check scan health" "error"
-    fi
+    # Check scan health (capture exit code without tripping `set -e`)
+    set +e
+    check_scan_health
+    health_status=$?
+    set -e
+
+    case $health_status in
+        0)
+            if (( iteration % 4 == 0 )); then  # Every 4th check (20 min default)
+                echo -e "${GREEN}✅ Scan healthy${NC}"
+            fi
+            ;;
+        2)
+            echo -e "${RED}🚨 STUCK AGENTS DETECTED!${NC}"
+            send_notification "Stuck agents detected in scan" "error"
+            ;;
+        3)
+            echo -e "${YELLOW}⚠️  High failure rate detected${NC}"
+            send_notification "High failure rate detected in scan" "warning"
+            ;;
+        *)
+            echo -e "${RED}❌ Failed to check scan health (exit ${health_status})${NC}"
+            send_notification "Failed to check scan health" "error"
+            ;;
+    esac
 
     # Check if scan is complete
     if [[ -f "$RUN_DIR/scan_status.json" ]]; then

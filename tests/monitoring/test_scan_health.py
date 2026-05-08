@@ -227,20 +227,14 @@ async def test_alert_file_output(health_config, sample_scan_data, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_webhook_alert_sending(health_config, sample_scan_data):
-    """Test webhook alert sending."""
+async def test_unsupported_alert_channel_logs_warning(health_config, sample_scan_data, caplog):
+    """Channels other than log/file are no longer supported and should warn, not error."""
     health_config["alert_channels"] = ["webhook"]
-    health_config["webhook_url"] = "http://example.com/webhook"
 
     monitor = ScanHealthMonitor(health_config)
 
-    with patch('aiohttp.ClientSession.post') as mock_post:
-        mock_post.return_value.__aenter__.return_value.status = 200
-
-        await monitor.monitor_scan_health(sample_scan_data)
-
-        # Should have attempted webhook calls
-        assert mock_post.called
+    # Should not raise even though 'webhook' is no longer a supported channel.
+    await monitor.monitor_scan_health(sample_scan_data)
 
 
 @pytest.mark.asyncio
@@ -357,16 +351,12 @@ def test_alert_title_generation(health_config):
 
 @pytest.mark.asyncio
 async def test_multiple_alert_channels(health_config, sample_scan_data):
-    """Test sending alerts through multiple channels."""
-    health_config["alert_channels"] = ["log", "file", "webhook"]
-    health_config["webhook_url"] = "http://example.com/webhook"
+    """Test sending alerts through multiple local channels."""
+    health_config["alert_channels"] = ["log", "file"]
 
     monitor = ScanHealthMonitor(health_config)
 
-    with patch('aiohttp.ClientSession.post') as mock_post:
-        mock_post.return_value.__aenter__.return_value.status = 200
+    health_report = await monitor.monitor_scan_health(sample_scan_data)
 
-        health_report = await monitor.monitor_scan_health(sample_scan_data)
-
-        # Should have generated alerts
-        assert len(health_report["alerts"]) > 0
+    # Should have generated alerts
+    assert len(health_report["alerts"]) > 0

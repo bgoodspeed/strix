@@ -10,7 +10,6 @@ from typing import Any
 from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
-    BatchSpanProcessor,
     SimpleSpanProcessor,
     SpanExporter,
     SpanExportResult,
@@ -153,34 +152,6 @@ def default_resource_attributes() -> dict[str, str]:
     }
 
 
-def parse_traceloop_headers(raw_headers: str) -> dict[str, str]:
-    headers = raw_headers.strip()
-    if not headers:
-        return {}
-
-    if headers.startswith("{"):
-        try:
-            parsed = json.loads(headers)
-        except json.JSONDecodeError:
-            logger.warning("Invalid TRACELOOP_HEADERS JSON, ignoring custom headers")
-            return {}
-        if isinstance(parsed, dict):
-            return {str(key): str(value) for key, value in parsed.items() if value is not None}
-        logger.warning("TRACELOOP_HEADERS JSON must be an object, ignoring custom headers")
-        return {}
-
-    result: dict[str, str] = {}
-    for part in headers.split(","):
-        key, sep, value = part.partition("=")
-        if not sep:
-            continue
-        key = key.strip()
-        value = value.strip()
-        if key and value:
-            result[key] = value
-    return result
-
-
 def prune_otel_span_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
     """Drop high-volume LLM payload attributes to keep JSONL event files compact."""
     filtered: dict[str, Any] = {}
@@ -305,26 +276,20 @@ class JsonlSpanExporter(SpanExporter):  # type: ignore[misc]
 def bootstrap_otel(
     *,
     bootstrapped: bool,
-    remote_enabled_state: bool,
     bootstrap_lock: threading.Lock,
-    traceloop: Any,
-    base_url: str,
-    api_key: str,
-    headers_raw: str,
     output_path_getter: Callable[[], Path],
     run_metadata_getter: Callable[[], dict[str, Any]],
     sanitizer: Callable[[Any], Any],
     write_lock_getter: Callable[[Path], threading.Lock],
     tracer_name: str = "strix.telemetry.tracer",
-) -> tuple[Any, bool, bool, bool]:
+) -> tuple[Any, bool]:
+    """Bootstrap OpenTelemetry with a local JSONL span exporter only.
+
+    No remote OTLP exporter is configured; spans are written to local run artifacts.
+    """
     with bootstrap_lock:
         if bootstrapped:
-            return (
-                trace.get_tracer(tracer_name),
-                remote_enabled_state,
-                bootstrapped,
-                remote_enabled_state,
-            )
+            return trace.get_tracer(tracer_name), bootstrapped
 
         local_exporter = JsonlSpanExporter(
             output_path_getter=output_path_getter,
@@ -334,80 +299,17 @@ def bootstrap_otel(
         )
         local_processor = SimpleSpanProcessor(local_exporter)
 
-        headers = parse_traceloop_headers(headers_raw)
-        remote_enabled = bool(base_url and api_key)
-        otlp_headers = headers
-        if remote_enabled:
-            otlp_headers = {"Authorization": f"Bearer {api_key}"}
-            otlp_headers.update(headers)
+        from opentelemetry.sdk.resources import Resource
 
-        otel_init_ok = False
-        if traceloop:
-            try:
-                from traceloop.sdk.instruments import Instruments
+        provider = TracerProvider(resource=Resource.create(default_resource_attributes()))
+        provider.add_span_processor(local_processor)
 
-                init_kwargs: dict[str, Any] = {
-                    "app_name": "strix-agent",
-                    "processor": local_processor,
-                    "telemetry_enabled": False,
-                    "resource_attributes": default_resource_attributes(),
-                    "block_instruments": {
-                        Instruments.URLLIB3,
-                        Instruments.REQUESTS,
-                    },
-                }
-                if remote_enabled:
-                    init_kwargs.update(
-                        {
-                            "api_endpoint": base_url,
-                            "api_key": api_key,
-                            "headers": headers,
-                        }
-                    )
-                import io
-                import sys
-
-                _stdout = sys.stdout
-                sys.stdout = io.StringIO()
-                try:
-                    traceloop.init(**init_kwargs)
-                finally:
-                    sys.stdout = _stdout
-                otel_init_ok = True
-            except Exception:
-                logger.exception("Failed to initialize Traceloop/OpenLLMetry")
-                remote_enabled = False
-
-        if not otel_init_ok:
-            from opentelemetry.sdk.resources import Resource
-
-            provider = TracerProvider(resource=Resource.create(default_resource_attributes()))
-            provider.add_span_processor(local_processor)
-            if remote_enabled:
-                try:
-                    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-                        OTLPSpanExporter,
-                    )
-
-                    endpoint = base_url.rstrip("/") + "/v1/traces"
-                    provider.add_span_processor(
-                        BatchSpanProcessor(
-                            OTLPSpanExporter(endpoint=endpoint, headers=otlp_headers)
-                        )
-                    )
-                except Exception:
-                    logger.exception("Failed to configure OTLP HTTP exporter")
-                    remote_enabled = False
-
-            try:
-                trace.set_tracer_provider(provider)
-                otel_init_ok = True
-            except Exception:
-                logger.exception("Failed to set OpenTelemetry tracer provider")
-                remote_enabled = False
+        try:
+            trace.set_tracer_provider(provider)
+            otel_init_ok = True
+        except Exception:
+            logger.exception("Failed to set OpenTelemetry tracer provider")
+            otel_init_ok = False
 
         otel_tracer = trace.get_tracer(tracer_name)
-        if otel_init_ok:
-            return otel_tracer, remote_enabled, True, remote_enabled
-
-        return otel_tracer, remote_enabled, bootstrapped, remote_enabled_state
+        return otel_tracer, otel_init_ok or bootstrapped

@@ -1,11 +1,8 @@
 import json
-import sys
-import types
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 
 from strix.telemetry import tracer as tracer_module
 from strix.telemetry import utils as telemetry_utils
@@ -21,14 +18,9 @@ def _load_events(events_path: Path) -> list[dict[str, Any]]:
 def _reset_tracer_globals(monkeypatch) -> None:
     monkeypatch.setattr(tracer_module, "_global_tracer", None)
     monkeypatch.setattr(tracer_module, "_OTEL_BOOTSTRAPPED", False)
-    monkeypatch.setattr(tracer_module, "_OTEL_REMOTE_ENABLED", False)
     telemetry_utils.reset_events_write_locks()
     monkeypatch.delenv("STRIX_TELEMETRY", raising=False)
     monkeypatch.delenv("STRIX_OTEL_TELEMETRY", raising=False)
-    monkeypatch.delenv("STRIX_POSTHOG_TELEMETRY", raising=False)
-    monkeypatch.delenv("TRACELOOP_BASE_URL", raising=False)
-    monkeypatch.delenv("TRACELOOP_API_KEY", raising=False)
-    monkeypatch.delenv("TRACELOOP_HEADERS", raising=False)
 
 
 def test_tracer_local_mode_writes_jsonl_with_correlation(monkeypatch, tmp_path) -> None:
@@ -88,132 +80,10 @@ def test_tracer_redacts_sensitive_payloads(monkeypatch, tmp_path) -> None:
     assert "[REDACTED]" in serialized
 
 
-def test_tracer_remote_mode_configures_traceloop_export(monkeypatch, tmp_path) -> None:
+def test_provider_setup_failure_does_not_mark_bootstrapped(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
 
-    class FakeTraceloop:
-        init_calls: ClassVar[list[dict[str, Any]]] = []
-
-        @staticmethod
-        def init(**kwargs: Any) -> None:
-            FakeTraceloop.init_calls.append(kwargs)
-
-        @staticmethod
-        def set_association_properties(properties: dict[str, Any]) -> None:  # noqa: ARG004
-            return None
-
-    monkeypatch.setattr(tracer_module, "Traceloop", FakeTraceloop)
-    monkeypatch.setenv("TRACELOOP_BASE_URL", "https://otel.example.com")
-    monkeypatch.setenv("TRACELOOP_API_KEY", "test-api-key")
-    monkeypatch.setenv("TRACELOOP_HEADERS", '{"x-custom":"header"}')
-
-    tracer = Tracer("remote-observability")
-    set_global_tracer(tracer)
-    tracer.log_chat_message("hello", "user", "agent-1")
-
-    assert tracer._remote_export_enabled is True
-    assert FakeTraceloop.init_calls
-    init_kwargs = FakeTraceloop.init_calls[-1]
-    assert init_kwargs["api_endpoint"] == "https://otel.example.com"
-    assert init_kwargs["api_key"] == "test-api-key"
-    assert init_kwargs["headers"] == {"x-custom": "header"}
-    assert isinstance(init_kwargs["processor"], SimpleSpanProcessor)
-    assert "strix.run_id" not in init_kwargs["resource_attributes"]
-    assert "strix.run_name" not in init_kwargs["resource_attributes"]
-
-    events_path = tmp_path / "strix_runs" / "remote-observability" / "events.jsonl"
-    events = _load_events(events_path)
-    run_started = next(event for event in events if event["event_type"] == "run.started")
-    assert run_started["payload"]["remote_export_enabled"] is True
-
-
-def test_tracer_local_mode_avoids_traceloop_remote_endpoint(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    class FakeTraceloop:
-        init_calls: ClassVar[list[dict[str, Any]]] = []
-
-        @staticmethod
-        def init(**kwargs: Any) -> None:
-            FakeTraceloop.init_calls.append(kwargs)
-
-        @staticmethod
-        def set_association_properties(properties: dict[str, Any]) -> None:  # noqa: ARG004
-            return None
-
-    monkeypatch.setattr(tracer_module, "Traceloop", FakeTraceloop)
-
-    tracer = Tracer("local-traceloop")
-    set_global_tracer(tracer)
-    tracer.log_chat_message("hello", "user", "agent-1")
-
-    assert FakeTraceloop.init_calls
-    init_kwargs = FakeTraceloop.init_calls[-1]
-    assert "api_endpoint" not in init_kwargs
-    assert "api_key" not in init_kwargs
-    assert "headers" not in init_kwargs
-    assert isinstance(init_kwargs["processor"], SimpleSpanProcessor)
-    assert tracer._remote_export_enabled is False
-
-
-def test_otlp_fallback_includes_auth_and_custom_headers(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(tracer_module, "Traceloop", None)
-    monkeypatch.setenv("TRACELOOP_BASE_URL", "https://otel.example.com")
-    monkeypatch.setenv("TRACELOOP_API_KEY", "test-api-key")
-    monkeypatch.setenv("TRACELOOP_HEADERS", '{"x-custom":"header"}')
-
-    captured: dict[str, Any] = {}
-
-    class FakeOTLPSpanExporter:
-        def __init__(self, endpoint: str, headers: dict[str, str] | None = None, **kwargs: Any):
-            captured["endpoint"] = endpoint
-            captured["headers"] = headers or {}
-            captured["kwargs"] = kwargs
-
-        def export(self, spans: Any) -> SpanExportResult:  # noqa: ARG002
-            return SpanExportResult.SUCCESS
-
-        def shutdown(self) -> None:
-            return None
-
-        def force_flush(self, timeout_millis: int = 30_000) -> bool:  # noqa: ARG002
-            return True
-
-    fake_module = types.ModuleType("opentelemetry.exporter.otlp.proto.http.trace_exporter")
-    fake_module.OTLPSpanExporter = FakeOTLPSpanExporter
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
-        fake_module,
-    )
-
-    tracer = Tracer("otlp-fallback")
-    set_global_tracer(tracer)
-
-    assert tracer._remote_export_enabled is True
-    assert captured["endpoint"] == "https://otel.example.com/v1/traces"
-    assert captured["headers"]["Authorization"] == "Bearer test-api-key"
-    assert captured["headers"]["x-custom"] == "header"
-
-
-def test_traceloop_init_failure_does_not_mark_bootstrapped_on_provider_failure(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    class FakeTraceloop:
-        @staticmethod
-        def init(**kwargs: Any) -> None:  # noqa: ARG004
-            raise RuntimeError("traceloop init failed")
-
-        @staticmethod
-        def set_association_properties(properties: dict[str, Any]) -> None:  # noqa: ARG004
-            return None
-
-    monkeypatch.setattr(tracer_module, "Traceloop", FakeTraceloop)
-
-    def _raise_provider_error(provider: Any) -> None:
+    def _raise_provider_error(provider: Any) -> None:  # noqa: ARG001
         raise RuntimeError("provider setup failed")
 
     monkeypatch.setattr(tracer_module.trace, "set_tracer_provider", _raise_provider_error)
@@ -222,7 +92,6 @@ def test_traceloop_init_failure_does_not_mark_bootstrapped_on_provider_failure(
     set_global_tracer(tracer)
 
     assert tracer_module._OTEL_BOOTSTRAPPED is False
-    assert tracer._remote_export_enabled is False
 
 
 def test_run_completed_event_emitted_once(monkeypatch, tmp_path) -> None:
@@ -310,31 +179,6 @@ def test_set_run_name_resets_run_completed_flag(monkeypatch, tmp_path) -> None:
 
     assert any(event["event_type"] == "run.started" for event in events)
     assert len(run_completed) == 1
-
-
-def test_set_run_name_updates_traceloop_association_properties(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    class FakeTraceloop:
-        associations: ClassVar[list[dict[str, Any]]] = []
-
-        @staticmethod
-        def init(**kwargs: Any) -> None:  # noqa: ARG004
-            return None
-
-        @staticmethod
-        def set_association_properties(properties: dict[str, Any]) -> None:
-            FakeTraceloop.associations.append(properties)
-
-    monkeypatch.setattr(tracer_module, "Traceloop", FakeTraceloop)
-
-    tracer = Tracer()
-    set_global_tracer(tracer)
-    tracer.set_run_name("renamed-run")
-
-    assert FakeTraceloop.associations
-    assert FakeTraceloop.associations[-1]["run_id"] == "renamed-run"
-    assert FakeTraceloop.associations[-1]["run_name"] == "renamed-run"
 
 
 def test_events_write_locks_are_scoped_by_events_file(monkeypatch, tmp_path) -> None:

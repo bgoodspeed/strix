@@ -22,6 +22,7 @@ class Config:
     strix_llm_max_retries = "5"
     strix_memory_compressor_timeout = "30"
     llm_timeout = "300"
+    strix_llm_stream_inactivity_timeout = "120"
     _LLM_CANONICAL_NAMES = (
         "strix_llm",
         "llm_api_key",
@@ -33,6 +34,7 @@ class Config:
         "strix_llm_max_retries",
         "strix_memory_compressor_timeout",
         "llm_timeout",
+        "strix_llm_stream_inactivity_timeout",
     )
 
     # Tool & Feature Configuration
@@ -45,6 +47,10 @@ class Config:
     strix_sandbox_execution_timeout = "120"
     strix_sandbox_connect_timeout = "10"
 
+    # Agent watchdog (in-loop inactivity detection)
+    strix_agent_watchdog_timeout = "1800"
+    strix_agent_watchdog_check_interval = "30"
+
     # Recovery System Configuration
     strix_recovery_retry_delay_seconds = "300"
     strix_recovery_max_retries = "3"
@@ -54,16 +60,10 @@ class Config:
     strix_recovery_failure_rate_percent = "50"
     strix_recovery_scan_progress_stall_minutes = "60"
     strix_recovery_alert_channels = "log,file"
-    strix_recovery_webhook_url = None
-    strix_recovery_slack_webhook_url = None
 
     # Telemetry
     strix_telemetry = "1"
     strix_otel_telemetry = None
-    strix_posthog_telemetry = None
-    traceloop_base_url = None
-    traceloop_api_key = None
-    traceloop_headers = None
 
     # Config file override (set via --config CLI arg)
     _config_file_override: Path | None = None

@@ -41,7 +41,6 @@ from strix.interface.utils import (  # noqa: E402
     validate_llm_response,
 )
 from strix.runtime.docker_runtime import HOST_GATEWAY_HOSTNAME  # noqa: E402
-from strix.telemetry import posthog  # noqa: E402
 from strix.telemetry.tracer import get_global_tracer  # noqa: E402
 
 
@@ -297,6 +296,9 @@ Examples:
   # Custom instructions (from file)
   strix --target example.com --instruction-file ./instructions.txt
   strix --target https://app.com --instruction-file /path/to/detailed_instructions.md
+
+  # Pre-flight sanity checks (LLM env, Docker, sandbox image, tool-registry parity)
+  strix doctor
         """,
     )
 
@@ -521,6 +523,11 @@ def main() -> None:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+    if len(sys.argv) >= 2 and sys.argv[1] == "doctor":
+        from strix.interface.doctor import run as doctor_run
+
+        sys.exit(doctor_run())
+
     args = parse_arguments()
 
     if args.config:
@@ -545,32 +552,13 @@ def main() -> None:
 
     args.local_sources = collect_local_sources(args.targets_info)
 
-    is_whitebox = bool(args.local_sources)
-
-    posthog.start(
-        model=Config.get("strix_llm"),
-        scan_mode=args.scan_mode,
-        is_whitebox=is_whitebox,
-        interactive=not args.non_interactive,
-        has_instructions=bool(args.instruction),
-    )
-
-    exit_reason = "user_exit"
     try:
         if args.non_interactive:
             asyncio.run(run_cli(args))
         else:
             asyncio.run(run_tui(args))
     except KeyboardInterrupt:
-        exit_reason = "interrupted"
-    except Exception as e:
-        exit_reason = "error"
-        posthog.error("unhandled_exception", str(e))
-        raise
-    finally:
-        tracer = get_global_tracer()
-        if tracer:
-            posthog.end(tracer, exit_reason=exit_reason)
+        pass
 
     results_path = Path("strix_runs") / args.run_name
     display_completion_message(args, results_path)

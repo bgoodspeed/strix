@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
 import logging
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 
@@ -13,6 +15,7 @@ from jinja2 import (
     select_autoescape,
 )
 
+from strix.config import Config
 from strix.llm import LLM, LLMConfig, LLMRequestFailedError
 from strix.llm.utils import clean_content
 from strix.runtime import SandboxInitializationError
@@ -80,6 +83,7 @@ class BaseAgent(metaclass=AgentMeta):
             self.llm.set_agent_identity(self.state.agent_name, self.state.agent_id)
         self._current_task: asyncio.Task[Any] | None = None
         self._force_stop = False
+        self._watchdog_triggered = False
 
         from strix.telemetry.tracer import get_global_tracer
 
@@ -156,6 +160,15 @@ class BaseAgent(metaclass=AgentMeta):
         except SandboxInitializationError as e:
             return self._handle_sandbox_error(e, tracer)
 
+        watchdog_task = asyncio.create_task(self._activity_watchdog())
+        try:
+            return await self._run_loop(tracer)
+        finally:
+            watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await watchdog_task
+
+    async def _run_loop(self, tracer: Optional["Tracer"]) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
         while True:
             if self._force_stop:
                 self._force_stop = False
@@ -232,12 +245,29 @@ class BaseAgent(metaclass=AgentMeta):
 
             except asyncio.CancelledError:
                 self._current_task = None
+                watchdog_kick = self._watchdog_triggered
+                self._watchdog_triggered = False
                 if tracer:
                     partial_content = tracer.finalize_streaming_as_interrupted(self.state.agent_id)
                     if partial_content and partial_content.strip():
+                        label = "[ABORTED BY WATCHDOG]" if watchdog_kick else "[ABORTED BY USER]"
                         self.state.add_message(
-                            "assistant", f"{partial_content}\n\n[ABORTED BY USER]"
+                            "assistant", f"{partial_content}\n\n{label}"
                         )
+                if watchdog_kick:
+                    recovery_msg = (
+                        "WATCHDOG RECOVERY: Your previous step exceeded the inactivity "
+                        "timeout and was aborted. This usually means an LLM stream stalled "
+                        "or a tool call hung. Continue from your last completed action; "
+                        "try a different approach if the previous one keeps failing, or "
+                        "use the appropriate finish tool if you have enough information."
+                    )
+                    self.state.add_message("user", recovery_msg)
+                    self.state.last_updated = datetime.now(UTC).isoformat()
+                    if tracer:
+                        with contextlib.suppress(Exception):
+                            tracer.update_agent_status(self.state.agent_id, "running")
+                    continue
                 if self.non_interactive:
                     raise
                 await self._enter_waiting_state(tracer, error_occurred=False, was_cancelled=True)
@@ -330,30 +360,24 @@ class BaseAgent(metaclass=AgentMeta):
         if not sandbox_mode and self.state.sandbox_id is None:
             from strix.runtime import get_runtime
 
-            try:
-                runtime = get_runtime()
-                sandbox_info = await runtime.create_sandbox(
-                    self.state.agent_id, self.state.sandbox_token, self.local_sources
-                )
-                self.state.sandbox_id = sandbox_info["workspace_id"]
-                self.state.sandbox_token = sandbox_info["auth_token"]
-                self.state.sandbox_info = sandbox_info
+            runtime = get_runtime()
+            sandbox_info = await runtime.create_sandbox(
+                self.state.agent_id, self.state.sandbox_token, self.local_sources
+            )
+            self.state.sandbox_id = sandbox_info["workspace_id"]
+            self.state.sandbox_token = sandbox_info["auth_token"]
+            self.state.sandbox_info = sandbox_info
 
-                if "agent_id" in sandbox_info:
-                    self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
+            if "agent_id" in sandbox_info:
+                self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
 
-                caido_port = sandbox_info.get("caido_port")
-                if caido_port:
-                    from strix.telemetry.tracer import get_global_tracer
+            caido_port = sandbox_info.get("caido_port")
+            if caido_port:
+                from strix.telemetry.tracer import get_global_tracer
 
-                    tracer = get_global_tracer()
-                    if tracer:
-                        tracer.caido_url = f"localhost:{caido_port}"
-            except Exception as e:
-                from strix.telemetry import posthog
-
-                posthog.error("sandbox_init_error", str(e))
-                raise
+                tracer = get_global_tracer()
+                if tracer:
+                    tracer.caido_url = f"localhost:{caido_port}"
 
         if not self.state.task:
             self.state.task = task
@@ -387,8 +411,7 @@ class BaseAgent(metaclass=AgentMeta):
             self.state.add_message("user", corrective_message)
             return False
 
-        thinking_blocks = getattr(final_response, "thinking_blocks", None)
-        self.state.add_message("assistant", final_response.content, thinking_blocks=thinking_blocks)
+        self.state.add_message("assistant", final_response.content)
         if tracer:
             tracer.clear_streaming_content(self.state.agent_id)
             tracer.log_chat_message(
@@ -620,6 +643,75 @@ class BaseAgent(metaclass=AgentMeta):
             except RuntimeError:
                 self._current_task.cancel()
         self._current_task = None
+
+    def _kick_for_inactivity(self) -> None:
+        """Cancel the current iteration due to watchdog-detected inactivity.
+
+        Differs from cancel_current_execution by setting _watchdog_triggered so the
+        agent loop recovers gracefully (injects a recovery message and continues)
+        instead of dropping out in non-interactive mode.
+        """
+        self._watchdog_triggered = True
+        if self._current_task and not self._current_task.done():
+            try:
+                loop = self._current_task.get_loop()
+                loop.call_soon_threadsafe(self._current_task.cancel)
+            except RuntimeError:
+                self._current_task.cancel()
+
+    async def _activity_watchdog(self) -> None:
+        """Cancel the current iteration if state.iteration hasn't advanced for too long.
+
+        Runs concurrently with agent_loop. Skips counting time when the agent is
+        intentionally idle (waiting for input, completed, or in llm_failed state).
+        """
+        try:
+            timeout = float(Config.get("strix_agent_watchdog_timeout") or "1800")
+            interval = float(Config.get("strix_agent_watchdog_check_interval") or "30")
+        except (TypeError, ValueError):
+            timeout = 1800.0
+            interval = 30.0
+
+        if timeout <= 0 or interval <= 0:
+            return
+
+        last_iteration = self.state.iteration
+        last_progress = time.monotonic()
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+
+            if (
+                self.state.is_waiting_for_input()
+                or self.state.completed
+                or self.state.llm_failed
+            ):
+                last_iteration = self.state.iteration
+                last_progress = time.monotonic()
+                continue
+
+            if self.state.iteration != last_iteration:
+                last_iteration = self.state.iteration
+                last_progress = time.monotonic()
+                continue
+
+            idle = time.monotonic() - last_progress
+            if idle >= timeout:
+                logger.warning(
+                    "Watchdog: agent %s (%s) appears stalled at iteration %d — "
+                    "no progress in %.0fs (threshold %.0fs). Cancelling current iteration.",
+                    self.state.agent_id,
+                    self.state.agent_name,
+                    self.state.iteration,
+                    idle,
+                    timeout,
+                )
+                self._kick_for_inactivity()
+                # Reset so we don't immediately re-cancel the recovery iteration.
+                last_progress = time.monotonic()
 
     async def _check_deadlock(self) -> bool:
         """Detect if agent has been stuck too long without activity.

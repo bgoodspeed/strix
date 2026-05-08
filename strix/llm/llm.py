@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -23,7 +24,7 @@ from strix.utils.resource_paths import get_strix_resource_path
 
 
 litellm.drop_params = True
-litellm.modify_params = False  # CRITICAL: Prevent litellm from modifying our messages
+litellm.modify_params = True
 
 
 class LLMRequestFailedError(Exception):
@@ -149,10 +150,26 @@ class LLM:
         chunks: list[Any] = []
         done_streaming = 0
 
+        inactivity_timeout = float(Config.get("strix_llm_stream_inactivity_timeout") or "120")
+
         self._total_stats.requests += 1
         response = await acompletion(**self._build_completion_args(messages), stream=True)
 
-        async for chunk in response:
+        chunk_iter = response.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    chunk_iter.__anext__(), timeout=inactivity_timeout
+                )
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    aclose = getattr(response, "aclose", None)
+                    if aclose is not None:
+                        await aclose()
+                raise
+
             chunks.append(chunk)
             if done_streaming:
                 done_streaming += 1
@@ -199,9 +216,7 @@ class LLM:
                 }
             )
 
-        # Sanitize conversation history to avoid API errors with thinking blocks
-        sanitized_history = self._sanitize_conversation_history(conversation_history)
-        compressed = list(self.memory_compressor.compress_history(sanitized_history))
+        compressed = list(self.memory_compressor.compress_history(conversation_history))
         messages.extend(compressed)
 
         if messages[-1].get("role") == "assistant":
@@ -211,64 +226,6 @@ class LLM:
             messages = self._add_cache_control(messages)
 
         return messages
-
-    def _sanitize_conversation_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Remove or preserve thinking blocks to avoid API errors.
-
-        Anthropic API errors can occur when trying to modify thinking blocks
-        that are immutable. This method filters out problematic thinking blocks
-        while preserving valid content.
-        """
-        sanitized = []
-        total_blocks = 0
-        blocks_removed = 0
-
-        for message in messages:
-            content = message.get('content')
-            sanitized_message = dict(message)  # Copy the message
-
-            if isinstance(content, list):
-                # Filter out thinking blocks that can't be modified
-                filtered_content = []
-                for block in content:
-                    total_blocks += 1
-                    if isinstance(block, dict):
-                        block_type = block.get('type')
-                        is_immutable = block.get('immutable', False)
-
-                        # Skip thinking blocks that are immutable or redacted
-                        if block_type in ['thinking', 'redacted_thinking'] and is_immutable:
-                            blocks_removed += 1
-                            continue
-
-                        # Create a deep copy to avoid shared references
-                        import copy
-                        filtered_content.append(copy.deepcopy(block))
-                    else:
-                        # Create a deep copy to avoid shared references
-                        import copy
-                        filtered_content.append(copy.deepcopy(block))
-
-                sanitized_message['content'] = filtered_content
-
-            sanitized.append(sanitized_message)
-
-        # Log sanitization to telemetry if blocks were removed
-        if blocks_removed > 0:
-            try:
-                from strix.telemetry.tracer import get_global_tracer
-                tracer = get_global_tracer()
-                if tracer and self.agent_id:
-                    tracer.track_thinking_block_sanitization(
-                        agent_id=self.agent_id,
-                        blocks_removed=blocks_removed,
-                        total_blocks=total_blocks,
-                        error_prevented=True
-                    )
-            except (ImportError, AttributeError):
-                pass
-
-        return sanitized
 
     def _build_completion_args(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if not self._supports_vision():
@@ -353,9 +310,6 @@ class LLM:
         return code is None or litellm._should_retry(code)
 
     def _raise_error(self, e: Exception) -> None:
-        from strix.telemetry import posthog
-
-        posthog.error("llm_error", type(e).__name__)
         raise LLMRequestFailedError(f"LLM request failed: {type(e).__name__}", str(e)) from e
 
     def _is_anthropic(self) -> bool:

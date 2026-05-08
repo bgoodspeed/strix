@@ -135,6 +135,22 @@ async def register_agent(
     return {"status": "registered", "agent_id": agent_id}
 
 
+@app.get("/list_tools")
+async def list_tools(
+    credentials: HTTPAuthorizationCredentials = security_dependency,
+) -> dict[str, Any]:
+    """Return the names of every tool registered in this sandbox image.
+
+    Used by `strix doctor` to detect drift between the host-side tool registry and
+    what the running sandbox image actually supports.
+    """
+    verify_token(credentials)
+    from strix.tools.registry import get_tool_names
+
+    names = sorted(get_tool_names())
+    return {"tools": names, "count": len(names)}
+
+
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     return {

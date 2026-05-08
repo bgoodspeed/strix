@@ -10,8 +10,6 @@ from uuid import uuid4
 from opentelemetry import trace
 from opentelemetry.trace import SpanContext, SpanKind
 
-from strix.config import Config
-from strix.telemetry import posthog
 from strix.telemetry.flags import is_otel_enabled
 from strix.telemetry.utils import (
     TelemetrySanitizer,
@@ -23,19 +21,12 @@ from strix.telemetry.utils import (
 )
 
 
-try:
-    from traceloop.sdk import Traceloop
-except ImportError:  # pragma: no cover - exercised when dependency is absent
-    Traceloop = None  # type: ignore[assignment,unused-ignore]
-
-
 logger = logging.getLogger(__name__)
 
 _global_tracer: Optional["Tracer"] = None
 
 _OTEL_BOOTSTRAP_LOCK = threading.Lock()
 _OTEL_BOOTSTRAPPED = False
-_OTEL_REMOTE_ENABLED = False
 
 def get_global_tracer() -> Optional["Tracer"]:
     return _global_tracer
@@ -82,7 +73,6 @@ class Tracer:
         self._sanitizer = TelemetrySanitizer()
 
         self._otel_tracer: Any = None
-        self._remote_export_enabled = False
 
         self.caido_url: str | None = None
         self.vulnerability_found_callback: Callable[[dict[str, Any]], None] | None = None
@@ -113,47 +103,24 @@ class Tracer:
         return self.run_metadata
 
     def _setup_telemetry(self) -> None:
-        global _OTEL_BOOTSTRAPPED, _OTEL_REMOTE_ENABLED
+        global _OTEL_BOOTSTRAPPED
 
         if not self._telemetry_enabled:
             self._otel_tracer = None
-            self._remote_export_enabled = False
             return
 
         run_dir = self.get_run_dir()
         self._events_file_path = run_dir / "events.jsonl"
-        base_url = (Config.get("traceloop_base_url") or "").strip()
-        api_key = (Config.get("traceloop_api_key") or "").strip()
-        headers_raw = Config.get("traceloop_headers") or ""
 
-        (
-            self._otel_tracer,
-            self._remote_export_enabled,
-            _OTEL_BOOTSTRAPPED,
-            _OTEL_REMOTE_ENABLED,
-        ) = bootstrap_otel(
+        self._otel_tracer, _OTEL_BOOTSTRAPPED = bootstrap_otel(
             bootstrapped=_OTEL_BOOTSTRAPPED,
-            remote_enabled_state=_OTEL_REMOTE_ENABLED,
             bootstrap_lock=_OTEL_BOOTSTRAP_LOCK,
-            traceloop=Traceloop,
-            base_url=base_url,
-            api_key=api_key,
-            headers_raw=headers_raw,
             output_path_getter=self._active_events_file_path,
             run_metadata_getter=self._active_run_metadata,
             sanitizer=self._sanitize_data,
             write_lock_getter=self._get_events_write_lock,
             tracer_name="strix.telemetry.tracer",
         )
-
-    def _set_association_properties(self, properties: dict[str, Any]) -> None:
-        if Traceloop is None:
-            return
-        sanitized = self._sanitize_data(properties)
-        try:
-            Traceloop.set_association_properties(sanitized)
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to set Traceloop association properties")
 
     def _sanitize_data(self, data: Any, key_hint: str | None = None) -> Any:
         return self._sanitizer.sanitize(data, key_hint=key_hint)
@@ -274,7 +241,6 @@ class Tracer:
         self._run_dir = None
         self._events_file_path = None
         self._run_completed_emitted = False
-        self._set_association_properties({"run_id": self.run_id, "run_name": self.run_name or ""})
         self._emit_run_started_event()
 
     def _emit_run_started_event(self) -> None:
@@ -287,7 +253,6 @@ class Tracer:
                 "run_name": self.run_name,
                 "start_time": self.start_time,
                 "local_jsonl_path": str(self.events_file_path),
-                "remote_export_enabled": self._remote_export_enabled,
             },
             status="running",
             include_run_metadata=True,
@@ -363,7 +328,6 @@ class Tracer:
 
         self.vulnerability_reports.append(report)
         logger.info(f"Added vulnerability report: {report_id} - {title}")
-        posthog.finding(severity)
         self._emit_event(
             "finding.created",
             payload={"report": report},
@@ -425,7 +389,6 @@ class Tracer:
             source="strix.findings",
         )
         self.save_run_data(mark_complete=True)
-        posthog.end(self, exit_reason="finished_by_tool")
 
     def log_agent_creation(
         self,
@@ -719,14 +682,6 @@ class Tracer:
             {
                 "targets": config.get("targets", []),
                 "user_instructions": config.get("user_instructions", ""),
-                "max_iterations": config.get("max_iterations", 200),
-            }
-        )
-        self._set_association_properties(
-            {
-                "run_id": self.run_id,
-                "run_name": self.run_name or "",
-                "targets": config.get("targets", []),
                 "max_iterations": config.get("max_iterations", 200),
             }
         )

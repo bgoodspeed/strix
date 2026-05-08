@@ -31,25 +31,7 @@ def _run_agent_in_thread(
         if inherited_messages:
             state.add_message("user", "<inherited_context_from_parent>")
             for msg in inherited_messages:
-                # Sanitize inherited content to remove immutable thinking blocks
-                content = msg["content"]
-                if isinstance(content, list):
-                    # Filter out immutable thinking blocks
-                    sanitized_content = []
-                    for block in content:
-                        if isinstance(block, dict):
-                            block_type = block.get('type')
-                            is_immutable = block.get('immutable', False)
-                            # Skip immutable thinking/redacted blocks
-                            if block_type in ['thinking', 'redacted_thinking'] and is_immutable:
-                                continue
-                            # Deep copy to avoid shared references
-                            import copy
-                            sanitized_content.append(copy.deepcopy(block))
-                        else:
-                            sanitized_content.append(block)
-                    content = sanitized_content
-                state.add_message(msg["role"], content)
+                state.add_message(msg["role"], msg["content"])
             state.add_message("user", "</inherited_context_from_parent>")
 
         if briefing:
@@ -1053,8 +1035,6 @@ def update_recovery_config(config_updates: dict[str, Any]) -> dict[str, Any]:
             "failure_rate_percent": "strix_recovery_failure_rate_percent",
             "scan_progress_stall_minutes": "strix_recovery_scan_progress_stall_minutes",
             "alert_channels": "strix_recovery_alert_channels",
-            "webhook_url": "strix_recovery_webhook_url",
-            "slack_webhook_url": "strix_recovery_slack_webhook_url"
         }
 
         # Handle nested alert_thresholds

@@ -46,21 +46,18 @@ class ScanHealthMonitor:
 
             alert_channels = Config.get("strix_recovery_alert_channels") or "log,file"
             channels = [c.strip() for c in alert_channels.split(",") if c.strip()]
+            channels = [c for c in channels if c in ("log", "file")] or ["log", "file"]
 
             return {
                 "stuck_agent_minutes": get_int(Config.get("strix_recovery_stuck_agent_minutes") or "30", 30),
                 "failure_rate_percent": get_float(Config.get("strix_recovery_failure_rate_percent") or "50", 50.0),
                 "scan_progress_stall_minutes": get_int(Config.get("strix_recovery_scan_progress_stall_minutes") or "60", 60),
-                "check_interval_minutes": 5,  # Not configurable via config for now
+                "check_interval_minutes": 5,
                 "enable_alerts": True,
                 "alert_channels": channels,
-                "webhook_url": Config.get("strix_recovery_webhook_url"),
-                "slack_webhook_url": Config.get("strix_recovery_slack_webhook_url"),
-                "email_config": None  # Not implemented yet
             }
 
         except ImportError:
-            # Fallback to hardcoded defaults if config import fails
             return {
                 "stuck_agent_minutes": 30,
                 "failure_rate_percent": 50,
@@ -68,9 +65,6 @@ class ScanHealthMonitor:
                 "check_interval_minutes": 5,
                 "enable_alerts": True,
                 "alert_channels": ["log", "file"],
-                "webhook_url": None,
-                "slack_webhook_url": None,
-                "email_config": None
             }
 
     async def monitor_scan_health(self, scan_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -396,7 +390,7 @@ class ScanHealthMonitor:
             return f"{severity}: Scan Health Issue"
 
     async def _send_alerts(self, alerts: List[Dict[str, Any]]) -> None:
-        """Send alerts through configured channels."""
+        """Send alerts through configured channels (local-only: log + file)."""
         enabled_channels = self.config.get("alert_channels", [])
 
         for alert in alerts:
@@ -406,14 +400,11 @@ class ScanHealthMonitor:
                         await self._send_log_alert(alert)
                     elif channel == "file":
                         await self._send_file_alert(alert)
-                    elif channel == "webhook":
-                        await self._send_webhook_alert(alert)
-                    elif channel == "slack":
-                        await self._send_slack_alert(alert)
-                    elif channel == "email":
-                        await self._send_email_alert(alert)
                     else:
-                        logger.warning(f"Unknown alert channel: {channel}")
+                        logger.warning(
+                            f"Alert channel '{channel}' is not supported in this build "
+                            "(only 'log' and 'file' are available)."
+                        )
 
                 except Exception as e:
                     logger.error(f"Failed to send alert via {channel}: {e}")
@@ -444,92 +435,6 @@ class ScanHealthMonitor:
 
         except Exception as e:
             logger.error(f"Failed to write alert to file: {e}")
-
-    async def _send_webhook_alert(self, alert: Dict[str, Any]) -> None:
-        """Send alert via webhook."""
-        webhook_url = self.config.get("webhook_url")
-        if not webhook_url:
-            return
-
-        try:
-            import aiohttp
-
-            payload = {
-                "alert": alert,
-                "scan_info": {
-                    "timestamp": alert["timestamp"],
-                    "alert_type": alert["type"],
-                    "severity": alert["severity"]
-                }
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(webhook_url, json=payload) as response:
-                    if response.status != 200:
-                        logger.warning(f"Webhook alert failed with status {response.status}")
-
-        except Exception as e:
-            logger.error(f"Failed to send webhook alert: {e}")
-
-    async def _send_slack_alert(self, alert: Dict[str, Any]) -> None:
-        """Send alert to Slack via webhook."""
-        slack_url = self.config.get("slack_webhook_url")
-        if not slack_url:
-            return
-
-        try:
-            import aiohttp
-
-            # Format message for Slack
-            severity_emoji = {
-                "critical": "🚨",
-                "warning": "⚠️",
-                "info": "ℹ️"
-            }.get(alert["severity"], "📢")
-
-            slack_message = {
-                "text": f"{severity_emoji} Strix Scan Alert",
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"*{alert['title']}*\n{alert['message']}"
-                        }
-                    },
-                    {
-                        "type": "section",
-                        "fields": [
-                            {
-                                "type": "mrkdwn",
-                                "text": f"*Severity:*\n{alert['severity'].title()}"
-                            },
-                            {
-                                "type": "mrkdwn",
-                                "text": f"*Time:*\n{alert['timestamp']}"
-                            }
-                        ]
-                    }
-                ]
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(slack_url, json=slack_message) as response:
-                    if response.status != 200:
-                        logger.warning(f"Slack alert failed with status {response.status}")
-
-        except Exception as e:
-            logger.error(f"Failed to send Slack alert: {e}")
-
-    async def _send_email_alert(self, alert: Dict[str, Any]) -> None:
-        """Send alert via email."""
-        email_config = self.config.get("email_config")
-        if not email_config:
-            return
-
-        # Email functionality would require additional dependencies
-        # This is a placeholder for future implementation
-        logger.info(f"Email alert would be sent: {alert['title']}")
 
     def _get_scan_start_time(self, agents: List[Dict[str, Any]]) -> Optional[str]:
         """Get the earliest agent creation time as scan start."""
