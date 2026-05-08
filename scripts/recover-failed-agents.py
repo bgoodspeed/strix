@@ -6,10 +6,14 @@ Strix Failed Agent Recovery Script
 This script analyzes failed agents in a Strix run and provides options for recovery.
 It can identify the root cause of failures and suggest appropriate actions.
 
+If no run directory is provided, defaults to the most recently modified
+subdirectory of strix_runs/.
+
 Usage:
     python3 recover-failed-agents.py [run_directory] [--auto-recover]
 
 Examples:
+    python3 recover-failed-agents.py
     python3 recover-failed-agents.py strix_runs/grow-441e-75040-beta-clio-dev_1695
     python3 recover-failed-agents.py strix_runs/my-scan --auto-recover
 """
@@ -287,9 +291,20 @@ def check_agent_health(status: Dict[str, Any]) -> None:
     print()
 
 
+def find_latest_run_dir(base: Path = Path("strix_runs")) -> Optional[Path]:
+    """Return the most recently modified subdirectory of strix_runs/, or None."""
+    if not base.is_dir():
+        return None
+    candidates = [p for p in base.iterdir() if p.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze and recover failed Strix agents")
-    parser.add_argument("run_dir", help="Path to the Strix run directory")
+    parser.add_argument("run_dir", nargs="?", default=None,
+                       help="Path to the Strix run directory (default: most recent in strix_runs/)")
     parser.add_argument("--auto-recover", action="store_true",
                        help="Attempt automated recovery of failed agents")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -297,7 +312,14 @@ def main():
 
     args = parser.parse_args()
 
-    run_dir = Path(args.run_dir)
+    if args.run_dir is None:
+        run_dir = find_latest_run_dir()
+        if run_dir is None:
+            print("❌ No run directories found in strix_runs/")
+            sys.exit(1)
+        print(f"📁 Using most recent run: {run_dir}")
+    else:
+        run_dir = Path(args.run_dir)
     if not run_dir.exists():
         print(f"❌ Run directory does not exist: {run_dir}")
         sys.exit(1)

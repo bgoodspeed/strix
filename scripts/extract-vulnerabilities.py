@@ -6,10 +6,14 @@ Strix Vulnerability Extraction Script
 Extract and format vulnerability findings from a Strix scan run.
 Supports multiple output formats: summary, detailed, JSON, CSV.
 
+If no run directory is provided, defaults to the most recently modified
+subdirectory of strix_runs/.
+
 Usage:
     python3 extract-vulnerabilities.py [run_directory] [--format FORMAT] [--output FILE]
 
 Examples:
+    python3 extract-vulnerabilities.py
     python3 extract-vulnerabilities.py strix_runs/grow-441e-75040-beta-clio-dev_1695
     python3 extract-vulnerabilities.py strix_runs/my-scan --format json --output findings.json
     python3 extract-vulnerabilities.py strix_runs/my-scan --format detailed
@@ -285,9 +289,20 @@ def _get_severity_breakdown(vulnerabilities: List[Dict[str, Any]]) -> Dict[str, 
     return breakdown
 
 
+def find_latest_run_dir(base: Path = Path("strix_runs")) -> Optional[Path]:
+    """Return the most recently modified subdirectory of strix_runs/, or None."""
+    if not base.is_dir():
+        return None
+    candidates = [p for p in base.iterdir() if p.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract vulnerability findings from Strix scan")
-    parser.add_argument("run_dir", help="Path to the Strix run directory")
+    parser.add_argument("run_dir", nargs="?", default=None,
+                       help="Path to the Strix run directory (default: most recent in strix_runs/)")
     parser.add_argument("--format", "-f", choices=['summary', 'detailed', 'json', 'csv'],
                        default='summary', help="Output format (default: summary)")
     parser.add_argument("--output", "-o", help="Output file (default: stdout)")
@@ -298,7 +313,15 @@ def main():
 
     args = parser.parse_args()
 
-    run_dir = Path(args.run_dir)
+    if args.run_dir is None:
+        run_dir = find_latest_run_dir()
+        if run_dir is None:
+            print("❌ No run directories found in strix_runs/", file=sys.stderr)
+            sys.exit(1)
+        if not args.quiet:
+            print(f"📁 Using most recent run: {run_dir}", file=sys.stderr)
+    else:
+        run_dir = Path(args.run_dir)
     if not run_dir.exists():
         print(f"❌ Run directory does not exist: {run_dir}", file=sys.stderr)
         sys.exit(1)
