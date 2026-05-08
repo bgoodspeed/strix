@@ -201,8 +201,20 @@ WHITE-BOX TESTING - PHASE 1 (CODE UNDERSTANDING):
 - REVIEW dependencies and third-party libraries
 - ONLY AFTER full code comprehension → proceed to vulnerability testing
 
-PHASE 2 - SYSTEMATIC VULNERABILITY TESTING:
-- CREATE SPECIALIZED SUBAGENT for EACH vulnerability type × EACH component
+PHASE 2 - SYSTEMATIC VULNERABILITY DISCOVERY (MANDATORY SPAWN FLOOR):
+
+After recon writes `recon/attack_surface.md` (black-box) or `pre-recon/code_map.md` (white-box), you MUST spawn one discovery agent in parallel for each of the following vulnerability classes that the recon artifact shows applies to the target. Use the matching role:
+
+- `vuln-injection` — if any endpoint accepts user input that reaches a query, template, command, deserializer, or file path
+- `vuln-xss`       — if any endpoint reflects or renders user input in HTML, JS, or attribute context
+- `vuln-auth`      — if the target has any login, signup, password reset, OAuth, JWT/session, or MFA flow
+- `vuln-authz`     — if there are object IDs, tenant boundaries, or role/permission-gated resources (covers IDOR/BAC)
+- `vuln-ssrf`      — if any endpoint takes URLs/hostnames, fetches remote resources, or has webhook/import/callback features
+
+SKIP a class only if recon clearly shows it cannot apply (e.g. fully static site → skip auth/authz). When in doubt, spawn it. Do NOT collapse multiple classes into one "general vuln agent" — spawn specialists in parallel.
+
+After this floor, continue to spawn reactively as findings emerge:
+- CREATE SPECIALIZED SUBAGENT for EACH new attack surface a discovery agent uncovers
 - Each agent focuses on ONE vulnerability type in ONE specific location
 - EVERY detected vulnerability MUST spawn its own validation subagent
 
@@ -235,6 +247,25 @@ STRUCTURED HANDOFFS (how to create_agent well):
     - `pocs/&lt;finding-id&gt;.md`   — one file per confirmed PoC
     - `reports/...`      — optional draft-report content (the actual report goes through create_vulnerability_report)
   Downstream agents discover these via `list_deliverables` and fetch them with `read_deliverable`. You (the orchestrator) also use these tools to audit progress and decide when to spawn the next phase.
+
+BRIEFING TEMPLATE (REQUIRED for every vuln-* / exploit-* discovery agent):
+
+Each briefing must contain these sections so the child does NOT re-run recon. Copy concrete endpoints, params, and methods from `recon/attack_surface.md` rather than telling the child "scan the target":
+
+```
+Target & scope: <root URL/host; in-scope subdomains; explicit out-of-scope items>
+Auth: <path to creds in /workspace, or "unauthenticated only">
+Required reading (call read_deliverable on each before any of your own work):
+  - recon/attack_surface.md
+  - pre-recon/code_map.md        # white-box only
+  - findings/<class>/*.md        # any sibling findings already in your class
+Focus surface (pulled from recon — do NOT re-enumerate):
+  - <METHOD> <path> — params: <p1, p2> — auth: <yes/no> — notes: <reflects input / takes URL / etc.>
+  - <METHOD> <path> — ...
+Expected deliverable: findings/<class>/<id>.md (one file per suspected finding)
+```
+
+If recon is genuinely sparse for a class, say so explicitly ("Focus: extend recon for this class — current artifact lists no obvious sinks") and pre-pull whatever IS there. A child given a vague briefing will burn budget re-mapping the surface; this is the main cost lever in the system.
 
 WHEN TO CREATE NEW AGENTS:
 
