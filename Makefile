@@ -1,4 +1,4 @@
-.PHONY: help install dev-install format lint type-check test test-cov clean pre-commit setup-dev
+.PHONY: help install dev-install format lint type-check test test-cov clean pre-commit setup-dev sync-upstream sync-upstream-check
 
 help:
 	@echo "Available commands:"
@@ -20,6 +20,10 @@ help:
 	@echo "Development:"
 	@echo "  pre-commit    - Run pre-commit hooks on all files"
 	@echo "  clean         - Clean up cache files and artifacts"
+	@echo ""
+	@echo "Fork maintenance:"
+	@echo "  sync-upstream-check - Show what is new in usestrix/strix (no changes)"
+	@echo "  sync-upstream       - Merge upstream changes into the current branch"
 
 install:
 	poetry install --only=main
@@ -88,3 +92,9 @@ clean:
 
 dev: format lint type-check test
 	@echo "✅ Development cycle complete!"
+
+sync-upstream-check:
+	./scripts/update-from-upstream.sh --dry-run
+
+sync-upstream:
+	./scripts/update-from-upstream.sh --stash
