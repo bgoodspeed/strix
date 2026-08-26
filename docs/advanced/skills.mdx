@@ -68,10 +68,10 @@ Framework-specific testing patterns.
 
 Third-party service and platform security.
 
-| Skill                | Coverage                           |
-| -------------------- | ---------------------------------- |
-| `supabase`           | Supabase RLS bypasses, auth issues |
-| `firebase_firestore` | Firestore rules, Firebase auth     |
+| Skill      | Coverage                                               |
+| ---------- | ------------------------------------------------------ |
+| `supabase` | Supabase RLS bypasses, auth issues                     |
+| `firebase` | Firebase Firestore, Storage rules, Auth, and Functions |
 
 ### Protocols
 
@@ -80,6 +80,29 @@ Protocol-specific testing techniques.
 | Skill     | Coverage                                         |
 | --------- | ------------------------------------------------ |
 | `graphql` | GraphQL introspection, batching, resolver issues |
+
+### Reconnaissance
+
+Passive discovery and attack-surface mapping techniques.
+
+| Skill             | Coverage                                                        |
+| ----------------- | --------------------------------------------------------------- |
+| `asset_discovery` | CT, TLS SAN pivoting, passive DNS, and ASN/IP asset enumeration |
+
+### Tooling
+
+Sandbox CLI playbooks for core recon and scanning tools.
+
+| Skill       | Coverage                                                |
+| ----------- | ------------------------------------------------------- |
+| `nmap`      | Port/service scan syntax and high-signal scan patterns  |
+| `nuclei`    | Template selection, severity filtering, and rate tuning |
+| `httpx`     | HTTP probing and fingerprint output patterns            |
+| `ffuf`      | Wordlist fuzzing, matcher/filter strategy, recursion    |
+| `subfinder` | Passive subdomain enumeration and source control        |
+| `naabu`     | Fast port scanning with explicit rate/verify controls   |
+| `katana`    | Crawl depth/JS/known-files behavior and pitfalls        |
+| `sqlmap`    | SQLi workflow for enumeration and controlled extraction  |
 
 ## Skill Structure
 

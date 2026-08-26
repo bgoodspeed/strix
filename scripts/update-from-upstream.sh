@@ -159,7 +159,7 @@ if [ "$BEHIND" -gt 40 ]; then
     echo "... and $((BEHIND - 40)) more"
 fi
 
-DEP_CHANGES="$(git diff --name-only "${BASE_REF}..${UPSTREAM_REF}" -- pyproject.toml poetry.lock)"
+DEP_CHANGES="$(git diff --name-only "${BASE_REF}..${UPSTREAM_REF}" -- pyproject.toml uv.lock poetry.lock)"
 
 if [ "$DRY_RUN" = true ]; then
     echo -e "\n${YELLOW}Dry run - nothing changed.${NC}"
@@ -191,7 +191,7 @@ restore_stash
 if [ -n "$DEP_CHANGES" ]; then
     echo -e "\n${YELLOW}Dependency files changed upstream:${NC}"
     echo "$DEP_CHANGES" | sed 's/^/  /'
-    echo "Run 'poetry install --with=dev' (or 'make dev-install') to sync your environment."
+    echo "Run 'make dev-install' to sync your environment."
 fi
 
 if [ "$DO_PUSH" = true ]; then
